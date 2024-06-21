@@ -5,7 +5,9 @@ import os
 import datetime
 import logging
 from math import fabs
-from time import time, monotonic
+from time import time, monotonic, sleep
+import threading
+from queue import Queue
 import re
 import sys
 
@@ -99,10 +101,27 @@ class FuzzyIndex:
 
         return output
 
+def build_index(thread_data, return_val_queue):
+    rows = 0
+    t0 = monotonic()
+    for artist_credit_id, recording_data in thread_data:
+        recording_index = FuzzyIndex()
+        if len(recording_data) > 0:
+            recording_index.build(recording_data)
+            rows += len(recording_data)
+        return_val_queue.put((artist_credit_id, recording_index))
+
+    t1 = monotonic()
+    print("Indexed %d rows in %.2fs" % (rows, (t1-t0) / len(recording_data)))
+
+
+MAX_THREADS = 8
+
 class MappingLookup:
 
     def __init__(self):
         self.artist_data = {}
+        self.return_value_queue = Queue()
 
     def create_indexes(self, conn):
 
@@ -115,6 +134,9 @@ class MappingLookup:
         last_artist_credit_id = -1
         last_row = None
 
+        threads = []
+        thread_data = []
+
         # Read from CSV file, since no sort, faster to iterate
         with open('canonical_musicbrainz_data.csv', newline='') as csvfile:
             reader = csv.reader(csvfile)
@@ -125,12 +147,6 @@ class MappingLookup:
                 if i == 0:
                     continue
 
-                # If we've indexed 2M rows, stop indexing. In theory.
-                # but during the indexing phase, there is a mysterious slow-down in
-                # indexing, despite not doing any real work. Around 18M rows. Very odd.
-                if i > 2000000:
-                    break
-        
                 # Make the data look like it came from PG
                 row = { "id": int(csv_row[0]),
                         "artist_credit_id": int(csv_row[1]),
@@ -139,20 +155,10 @@ class MappingLookup:
                       }
 
                 if last_artist_credit_id >= 0 and row["artist_credit_id"] != last_artist_credit_id:
-                    if recording_data:
-                        if i < 1000000:
-                            # If we're indexing, print dots. We see dots below 2M rows. Good.
-                            # WTF is 18M + rows slow when we're not indexing??
-                            print(".", end="")
-                            recording_index = FuzzyIndex()
-                            recording_index.build(recording_data)
-                        else:
-                            recording_index = None
+                    thread_data.append((last_artist_credit_id, recording_data))
                     recording_data = []
-
                     self.artist_data[last_row["artist_credit_id"]] = (FuzzyIndex.encode_string(last_row["artist_credit_name"]),
                                                                                                last_row["artist_credit_id"])
-                    self.recording_indexes[last_row["artist_credit_id"]] = recording_index
 
                 encoded = FuzzyIndex.encode_string(row["recording_name"])
                 if encoded:
@@ -161,13 +167,32 @@ class MappingLookup:
                 last_artist_credit_id = row["artist_credit_id"]
 
                 if i and i % CHUNK_SIZE == 0:
-                    t1_chunk = monotonic()
-                    print("Indexed %d rows" % i, end="")
-                    if t0_chunk:
-                        print(" in %.1fs %.2f row/s" % (t1_chunk - t0_chunk, CHUNK_SIZE / (t1_chunk - t0_chunk)))
-                    else:
-                        print()
-                    t0_chunk = t1_chunk
+                    while True:
+                        # Collect the returned values and store them
+                        while not self.return_value_queue.empty():
+                            ac_id, index = self.return_value_queue.get()
+                            self.recording_indexes[ac_id] = index
+
+                        # Now clean up dead threads
+                        for thread in threads:
+                            if not thread.is_alive():
+                                thread.join(.01)
+                                threads.remove(thread)
+                                continue
+
+                        if len(threads) == MAX_THREADS:
+                            sleep(1)
+                            continue
+
+                        # Start a new thread
+                        thread = threading.Thread(target=build_index, args=(thread_data, self.return_value_queue))
+                        thread.start()
+                        thread_data = []
+                        threads.append(thread)
+                        break
+
+                    print("%d threads running" % len(threads))
+
 
         #TODO: save last generated chunk
 
