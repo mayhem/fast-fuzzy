@@ -15,6 +15,7 @@ from psycopg2.extras import DictCursor, execute_values
 from sklearn.feature_extraction.text import TfidfVectorizer
 from unidecode import unidecode
 
+# For wolf
 DB_CONNECT = "dbname=musicbrainz_db user=musicbrainz host=localhost port=5432 password=musicbrainz"
 ARTIST_CONFIDENCE_THRESHOLD = .7
 CHUNK_SIZE = 100000
@@ -71,9 +72,12 @@ class FuzzyIndex:
             lookup_ids.append(lookup_id)
 
         self.vectorizer = TfidfVectorizer(min_df=1, analyzer=ngrams)
+        # This function's performance degrades over time, despite only ever working on small indexes. WTF?
         lookup_matrix = self.vectorizer.fit_transform(lookup_strings)
 
-        self.index = nmslib.init(method='simple_invindx', space='negdotprod_sparse_fast', data_type=nmslib.DataType.SPARSE_VECTOR)
+        self.index = nmslib.init(method='simple_invindx',
+                                 space='negdotprod_sparse_fast',
+                                 data_type=nmslib.DataType.SPARSE_VECTOR)
         self.index.addDataPointBatch(lookup_matrix, lookup_ids)
         self.index.createIndex()
 
@@ -111,6 +115,7 @@ class MappingLookup:
         last_artist_credit_id = -1
         last_row = None
 
+        # Read from CSV file, since no sort, faster to iterate
         with open('canonical_musicbrainz_data.csv', newline='') as csvfile:
             reader = csv.reader(csvfile)
 
@@ -120,9 +125,13 @@ class MappingLookup:
                 if i == 0:
                     continue
 
+                # If we've indexed 2M rows, stop indexing. In theory.
+                # but during the indexing phase, there is a mysterious slow-down in
+                # indexing, despite not doing any real work. Around 18M rows. Very odd.
                 if i > 2000000:
                     break
-
+        
+                # Make the data look like it came from PG
                 row = { "id": int(csv_row[0]),
                         "artist_credit_id": int(csv_row[1]),
                         "artist_credit_name": csv_row[3],
@@ -132,6 +141,8 @@ class MappingLookup:
                 if last_artist_credit_id >= 0 and row["artist_credit_id"] != last_artist_credit_id:
                     if recording_data:
                         if i < 1000000:
+                            # If we're indexing, print dots. We see dots below 2M rows. Good.
+                            # WTF is 18M + rows slow when we're not indexing??
                             print(".", end="")
                             recording_index = FuzzyIndex()
                             recording_index.build(recording_data)
@@ -165,16 +176,22 @@ class MappingLookup:
         print("built indexes in %.1f seconds." % (t1 - t0))
 
     def search(self, artist_name, recording_name):
+
+        # First do artist fuzzy search, which takes 1-2ms with a full index.
         artist_name = FuzzyIndex.encode_string(artist_name)
         recording_name = FuzzyIndex.encode_string(recording_name)
         artists = self.artist_index.search(artist_name)
         results = []
+
+        # For each hit, search recordings.
         for artist in artists:
             artist["id"] = int(artist["id"])
             artist["text"] = self.artist_data[artist["id"]][0]
             if artist["confidence"] > ARTIST_CONFIDENCE_THRESHOLD:
                 print("search recordings for: ", artist["text"])
                 search_index = self.recording_indexes[artist["id"]]
+
+                # check to see if the artist was indexed
                 if search_index is None:
                     print("artist not indexed")
                     return []
@@ -201,7 +218,7 @@ with psycopg2.connect(DB_CONNECT) as conn:
         try:
             artist_name, recording_name = query.split(",")
         except ValueError:
-            print("Input must be artist then recording, separateed by comma")
+            print("Input must be artist then recording, separated by comma")
             continue
         t0 = monotonic()
         results = mi.search(artist_name, recording_name)
