@@ -15,6 +15,8 @@ import psycopg2
 from psycopg2.extras import DictCursor, execute_values
 
 from sklearn.feature_extraction.text import TfidfVectorizer
+from joblib import parallel_backend
+
 from unidecode import unidecode
 
 # For wolf
@@ -234,26 +236,27 @@ class MappingLookup:
 
 mi = MappingLookup()
 
-with psycopg2.connect(DB_CONNECT) as conn:
-    mi.create_indexes(conn)
-    while True:
-        query = input("artist,recording>")
-        if not query:
-            continue
-        try:
-            artist_name, recording_name = query.split(",")
-        except ValueError:
-            print("Input must be artist then recording, separated by comma")
-            continue
-        t0 = monotonic()
-        results = mi.search(artist_name, recording_name)
-        t1 = monotonic()
-        for result in results:
-            print("%-40s %.3f %6d %-40s %.3f %6d" % (result["artist_name"],
-                                                     result["artist_confidence"],
-                                                     result["artist_credit_id"],
-                                                     result["recording_name"],
-                                                     result["recording_confidence"],
-                                                     result["canonical_id"]))
-            
-        print("%.3fms" % ((t1 - t0) * 1000))
+with parallel_backend('threading', n_jobs=32):
+    with psycopg2.connect(DB_CONNECT) as conn:
+        mi.create_indexes(conn)
+        while True:
+            query = input("artist,recording>")
+            if not query:
+                continue
+            try:
+                artist_name, recording_name = query.split(",")
+            except ValueError:
+                print("Input must be artist then recording, separated by comma")
+                continue
+            t0 = monotonic()
+            results = mi.search(artist_name, recording_name)
+            t1 = monotonic()
+            for result in results:
+                print("%-40s %.3f %6d %-40s %.3f %6d" % (result["artist_name"],
+                                                         result["artist_confidence"],
+                                                         result["artist_credit_id"],
+                                                         result["recording_name"],
+                                                         result["recording_confidence"],
+                                                         result["canonical_id"]))
+                
+            print("%.3fms" % ((t1 - t0) * 1000))
