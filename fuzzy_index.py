@@ -3,7 +3,6 @@
 import csv
 import os
 import datetime
-import logging
 from math import fabs
 from time import time, monotonic, sleep
 import threading
@@ -14,23 +13,18 @@ import sys
 import psycopg2
 from psycopg2.extras import DictCursor, execute_values
 
+import sklearn
 from sklearn.feature_extraction.text import TfidfVectorizer
 from joblib import parallel_backend
 
+import nmslib
 from unidecode import unidecode
 
 # For wolf
 DB_CONNECT = "dbname=musicbrainz_db user=musicbrainz host=localhost port=5432 password=musicbrainz"
 ARTIST_CONFIDENCE_THRESHOLD = .7
 CHUNK_SIZE = 100000
-
-try:
-    import nmslib
-    have_nmslib = True
-except ImportError:
-    have_nmslib = False
-
-logger = logging.getLogger(__name__)
+MAX_THREADS = 8
 
 def ngrams(string, n=3):
     """ Take a lookup string (noise removed, lower case, etc) and turn into a list of trigrams """
@@ -49,10 +43,6 @@ class FuzzyIndex:
     '''
 
     def __init__(self):
-        global have_nmslib
-
-        self.have_nmslib = have_nmslib
-        self.vectorizer = None
         self.index = None
 
     @staticmethod
@@ -66,18 +56,17 @@ class FuzzyIndex:
             Builds a new index and saves it to disk and keeps it in ram as well.
         """
 
-        if not self.have_nmslib:
-            return
-
         lookup_strings = []
         lookup_ids = []
         for value, lookup_id in search_data:
             lookup_strings.append(value)
             lookup_ids.append(lookup_id)
 
-        self.vectorizer = TfidfVectorizer(min_df=1, analyzer=ngrams)
-        # This function's performance degrades over time, despite only ever working on small indexes. WTF?
-        lookup_matrix = self.vectorizer.fit_transform(lookup_strings)
+        vectorizer = TfidfVectorizer(min_df=1, analyzer=ngrams)
+
+        # The fit_transform function carries out disk writes, which slows things way down.
+        # How does one ensure that this is a fully in-memory operation?
+        lookup_matrix = vectorizer.fit_transform(lookup_strings)
 
         self.index = nmslib.init(method='simple_invindx',
                                  space='negdotprod_sparse_fast',
@@ -89,11 +78,8 @@ class FuzzyIndex:
         """
             Return IDs for the matches in a list. Returns a list of dicts with keys of lookup_string, confidence and recording_id.
         """
-        if not self.have_nmslib:
-            logger.warn("nmslib not installed and trying fuzzy search, but nothing will match. Install nmslib!")
-            return []
-
-        query_matrix = self.vectorizer.transform([query_string])
+        vectorizer = TfidfVectorizer(min_df=1, analyzer=ngrams)
+        query_matrix = vectorizer.transform([query_string])
         # TOTUNE: k might need tuning
         results = self.index.knnQueryBatch(query_matrix, k=3, num_threads=5)
 
@@ -117,7 +103,6 @@ def build_index(thread_data, return_val_queue):
     print("Indexed %d rows in %.2fs" % (rows, (t1-t0) / len(recording_data)))
 
 
-MAX_THREADS = 8
 
 class MappingLookup:
 
@@ -193,8 +178,6 @@ class MappingLookup:
                         threads.append(thread)
                         break
 
-                    print("%d threads running" % len(threads))
-
 
         #TODO: save last generated chunk
 
@@ -236,7 +219,8 @@ class MappingLookup:
 
 mi = MappingLookup()
 
-with parallel_backend('threading', n_jobs=32):
+sklearn.set_config(working_memory=1024 * 100)
+with parallel_backend('threading', n_jobs=MAX_THREADS):
     with psycopg2.connect(DB_CONNECT) as conn:
         mi.create_indexes(conn)
         while True:
