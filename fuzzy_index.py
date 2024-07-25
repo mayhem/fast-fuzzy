@@ -26,6 +26,9 @@ ARTIST_CONFIDENCE_THRESHOLD = .7
 CHUNK_SIZE = 100000
 MAX_THREADS = 8
 
+# TOTUNE
+MAX_ENCODED_STRING_LENGTH = 30
+
 def ngrams(string, n=3):
     """ Take a lookup string (noise removed, lower case, etc) and turn into a list of trigrams """
 
@@ -44,12 +47,13 @@ class FuzzyIndex:
 
     def __init__(self):
         self.index = None
+        self.vectorizer = None
 
     @staticmethod
     def encode_string(text):
         if text is None:
             return None
-        return unidecode(re.sub(" +", "", re.sub(r'[^\w ]+', '', text)).strip().lower())
+        return unidecode(re.sub(" +", "", re.sub(r'[^\w ]+', '', text)).strip().lower())[:MAX_ENCODED_STRING_LENGTH]
 
     def build(self, search_data):
         """
@@ -62,26 +66,36 @@ class FuzzyIndex:
             lookup_strings.append(value)
             lookup_ids.append(lookup_id)
 
-        vectorizer = TfidfVectorizer(min_df=1, analyzer=ngrams)
+        t0 = monotonic()
+        self.vectorizer = TfidfVectorizer(min_df=1, analyzer=ngrams)
 
         # The fit_transform function carries out disk writes, which slows things way down.
         # How does one ensure that this is a fully in-memory operation?
-        lookup_matrix = vectorizer.fit_transform(lookup_strings)
+        lookup_matrix = self.vectorizer.fit_transform(lookup_strings)
 
         self.index = nmslib.init(method='simple_invindx',
                                  space='negdotprod_sparse_fast',
                                  data_type=nmslib.DataType.SPARSE_VECTOR)
         self.index.addDataPointBatch(lookup_matrix, lookup_ids)
         self.index.createIndex()
+        t1 = monotonic()
+        if False:  #(t1-t0 > 1.0):
+            print("%d items %.2f items/sec" % (len(search_data), (t1-t0) / len(search_data)))
+            for a, r in search_data:
+                print(a, r)
+                print("   %-40s" % (a[:39]))
+            print()
 
     def search(self, query_string):
         """
             Return IDs for the matches in a list. Returns a list of dicts with keys of lookup_string, confidence and recording_id.
         """
-        vectorizer = TfidfVectorizer(min_df=1, analyzer=ngrams)
-        query_matrix = vectorizer.transform([query_string])
+        if self.index is None:
+            raise IndexError("Must build index before searching")
+
+        query_matrix = self.vectorizer.transform([query_string])
         # TOTUNE: k might need tuning
-        results = self.index.knnQueryBatch(query_matrix, k=3, num_threads=5)
+        results = self.index.knnQueryBatch(query_matrix, k=15, num_threads=5)
 
         output = []
         for index, conf in zip(results[0][0], results[0][1]):
@@ -89,19 +103,21 @@ class FuzzyIndex:
 
         return output
 
+# Thread entry function 
 def build_index(thread_data, return_val_queue):
     rows = 0
+
     t0 = monotonic()
     for artist_credit_id, recording_data in thread_data:
         recording_index = FuzzyIndex()
         if len(recording_data) > 0:
             recording_index.build(recording_data)
+#            print("build done %d rows %.1f seconds for %.1f rows/sec" % (len(recording_data), t1-t0, len(recording_data) / (t1-t0)))
             rows += len(recording_data)
         return_val_queue.put((artist_credit_id, recording_index))
 
     t1 = monotonic()
-    print("Indexed %d rows in %.2fs" % (rows, (t1-t0) / len(recording_data)))
-
+    print("built index: %d rows %.1f seconds for %.1f rows/sec" % (rows, t1-t0, rows / (t1-t0)))
 
 
 class MappingLookup:
@@ -109,6 +125,12 @@ class MappingLookup:
     def __init__(self):
         self.artist_data = {}
         self.return_value_queue = Queue()
+
+    def join_threads(self, threads):
+        print("Wait for threads to finish")
+        for thread in threads:
+            thread.join()
+
 
     def create_indexes(self, conn):
 
@@ -133,6 +155,8 @@ class MappingLookup:
             for i, csv_row in enumerate(reader):
                 if i == 0:
                     continue
+
+                    break
 
                 # Make the data look like it came from PG
                 row = { "id": int(csv_row[0]),
@@ -171,26 +195,35 @@ class MappingLookup:
                             sleep(1)
                             continue
 
-                        # Start a new thread
-                        thread = threading.Thread(target=build_index, args=(thread_data, self.return_value_queue))
-                        thread.start()
+                        if i <= 1000000:
+                            # Start a new thread
+                            thread = threading.Thread(target=build_index, args=(thread_data, self.return_value_queue))
+                            thread.start()
+                            threads.append(thread)
+
                         thread_data = []
-                        threads.append(thread)
+
                         break
 
 
         #TODO: save last generated chunk
 
+        self.join_threads(threads)
+
         self.artist_index.build(self.artist_data.values())
         t1 = monotonic()
-        print("built indexes in %.1f seconds." % (t1 - t0))
+        print("built all indexes in %.1f seconds." % (t1 - t0))
 
     def search(self, artist_name, recording_name):
 
         # First do artist fuzzy search, which takes 1-2ms with a full index.
         artist_name = FuzzyIndex.encode_string(artist_name)
         recording_name = FuzzyIndex.encode_string(recording_name)
+
+        t0 = monotonic()
         artists = self.artist_index.search(artist_name)
+        t1 = monotonic()
+        print("artist index search: %.2fs" % (t1-t0))
         results = []
 
         # For each hit, search recordings.
@@ -199,7 +232,11 @@ class MappingLookup:
             artist["text"] = self.artist_data[artist["id"]][0]
             if artist["confidence"] > ARTIST_CONFIDENCE_THRESHOLD:
                 print("search recordings for: ", artist["text"])
-                search_index = self.recording_indexes[artist["id"]]
+                try:
+                    search_index = self.recording_indexes[artist["id"]]
+                except KeyError:
+                    print("Artist %d not indexed, results not included." % artist["id"])
+                    continue
 
                 # check to see if the artist was indexed
                 if search_index is None:
@@ -243,4 +280,4 @@ with parallel_backend('threading', n_jobs=MAX_THREADS):
                                                          result["recording_confidence"],
                                                          result["canonical_id"]))
                 
-            print("%.3fms" % ((t1 - t0) * 1000))
+            print("%.3fms total search time" % ((t1 - t0) * 1000))
