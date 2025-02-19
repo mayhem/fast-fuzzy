@@ -4,7 +4,7 @@ import csv
 import os
 import datetime
 from math import fabs
-from time import time, monotonic, sleep
+from time import monotonic
 import threading
 from queue import Queue
 import re
@@ -66,7 +66,6 @@ class FuzzyIndex:
             lookup_strings.append(value)
             lookup_ids.append(lookup_id)
 
-        t0 = monotonic()
         self.vectorizer = TfidfVectorizer(min_df=1, analyzer=ngrams)
 
         # The fit_transform function carries out disk writes, which slows things way down.
@@ -78,13 +77,6 @@ class FuzzyIndex:
                                  data_type=nmslib.DataType.SPARSE_VECTOR)
         self.index.addDataPointBatch(lookup_matrix, lookup_ids)
         self.index.createIndex()
-        t1 = monotonic()
-        if False:  #(t1-t0 > 1.0):
-            print("%d items %.2f items/sec" % (len(search_data), (t1-t0) / len(search_data)))
-            for a, r in search_data:
-                print(a, r)
-                print("   %-40s" % (a[:39]))
-            print()
 
     def search(self, query_string):
         """
@@ -103,60 +95,34 @@ class FuzzyIndex:
 
         return output
 
-# Thread entry function 
-def build_index(thread_data, return_val_queue):
-    rows = 0
 
-    t0 = monotonic()
-    for artist_credit_id, recording_data in thread_data:
-        recording_index = FuzzyIndex()
-        if len(recording_data) > 0:
-            recording_index.build(recording_data)
-#            print("build done %d rows %.1f seconds for %.1f rows/sec" % (len(recording_data), t1-t0, len(recording_data) / (t1-t0)))
-            rows += len(recording_data)
-        return_val_queue.put((artist_credit_id, recording_index))
-
-    t1 = monotonic()
-    print("built index: %d rows %.1f seconds for %.1f rows/sec" % (rows, t1-t0, rows / (t1-t0)))
-
-
-class MappingLookup:
+class MappingLookupIndex:
 
     def __init__(self):
         self.artist_data = {}
         self.return_value_queue = Queue()
 
-    def join_threads(self, threads):
-        print("Wait for threads to finish")
-        for thread in threads:
-            thread.join()
-
-
     def create_indexes(self, conn):
 
         # TODO: VA and more complex artist credits probably not handled correctly
-
         self.artist_index = FuzzyIndex()
         self.recording_indexes = {}
 
-        t0 = monotonic()
         last_artist_credit_id = -1
         last_row = None
 
-        threads = []
-        thread_data = []
-
+        t0 = monotonic()
         # Read from CSV file, since no sort, faster to iterate
         with open('canonical_musicbrainz_data.csv', newline='') as csvfile:
             reader = csv.reader(csvfile)
 
-            t0_chunk = 0.0
             recording_data = []
             for i, csv_row in enumerate(reader):
                 if i == 0:
                     continue
 
-                    break
+                if i % 1000000 == 0:
+                    print("Indexed %d rows" % i)
 
                 # Make the data look like it came from PG
                 row = { "id": int(csv_row[0]),
@@ -166,7 +132,7 @@ class MappingLookup:
                       }
 
                 if last_artist_credit_id >= 0 and row["artist_credit_id"] != last_artist_credit_id:
-                    thread_data.append((last_artist_credit_id, recording_data))
+                    self.recording_indexes[last_artist_credit_id] = recording_data
                     recording_data = []
                     self.artist_data[last_row["artist_credit_id"]] = (FuzzyIndex.encode_string(last_row["artist_credit_name"]),
                                                                                                last_row["artist_credit_id"])
@@ -177,42 +143,9 @@ class MappingLookup:
                 last_row = row
                 last_artist_credit_id = row["artist_credit_id"]
 
-                if i and i % CHUNK_SIZE == 0:
-                    while True:
-                        # Collect the returned values and store them
-                        while not self.return_value_queue.empty():
-                            ac_id, index = self.return_value_queue.get()
-                            self.recording_indexes[ac_id] = index
-
-                        # Now clean up dead threads
-                        for thread in threads:
-                            if not thread.is_alive():
-                                thread.join(.01)
-                                threads.remove(thread)
-                                continue
-
-                        if len(threads) == MAX_THREADS:
-                            sleep(1)
-                            continue
-
-                        if i <= 1000000:
-                            # Start a new thread
-                            thread = threading.Thread(target=build_index, args=(thread_data, self.return_value_queue))
-                            thread.start()
-                            threads.append(thread)
-
-                        thread_data = []
-
-                        break
-
-
-        #TODO: save last generated chunk
-
-        self.join_threads(threads)
-
         self.artist_index.build(self.artist_data.values())
         t1 = monotonic()
-        print("built all indexes in %.1f seconds." % (t1 - t0))
+        print("loaded data and build artist index in %.1f seconds." % (t1 - t0))
 
     def search(self, artist_name, recording_name):
 
@@ -223,7 +156,7 @@ class MappingLookup:
         t0 = monotonic()
         artists = self.artist_index.search(artist_name)
         t1 = monotonic()
-        print("artist index search: %.2fs" % (t1-t0))
+        print("artist index search: %.1fms" % ((t1-t0)*1000)
         results = []
 
         # For each hit, search recordings.
@@ -231,17 +164,16 @@ class MappingLookup:
             artist["id"] = int(artist["id"])
             artist["text"] = self.artist_data[artist["id"]][0]
             if artist["confidence"] > ARTIST_CONFIDENCE_THRESHOLD:
-                print("search recordings for: ", artist["text"])
-                try:
-                    search_index = self.recording_indexes[artist["id"]]
-                except KeyError:
-                    print("Artist %d not indexed, results not included." % artist["id"])
-                    continue
+                print("search recordings for: '%s'" % artist["text"])
 
-                # check to see if the artist was indexed
-                if search_index is None:
-                    print("artist not indexed")
-                    return []
+                # Fetch the index for the recordings -- if not built yet, build it!
+                search_index = self.recording_indexes[artist["id"]]
+                if not isinstance(search_index, FuzzyIndex):
+                    fi = FuzzyIndex()
+                    fi.build(search_index)
+                    self.recording_indexes[artist["id"]] = fi
+                    search_index = fi
+
                 rec_results = search_index.search(FuzzyIndex.encode_string(recording_name))
                 for result in rec_results:
                     results.append({ "artist_name": artist["text"],
@@ -254,7 +186,7 @@ class MappingLookup:
         return results
 
 
-mi = MappingLookup()
+mi = MappingLookupIndex()
 
 sklearn.set_config(working_memory=1024 * 100)
 with parallel_backend('threading', n_jobs=MAX_THREADS):
@@ -280,4 +212,4 @@ with parallel_backend('threading', n_jobs=MAX_THREADS):
                                                          result["recording_confidence"],
                                                          result["canonical_id"]))
                 
-            print("%.3fms total search time" % ((t1 - t0) * 1000))
+            print("%.1fms total search time" % ((t1 - t0) * 1000))
