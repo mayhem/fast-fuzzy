@@ -7,8 +7,10 @@ from math import fabs
 from time import monotonic
 import threading
 from queue import Queue
+import pickle
 import re
 import sys
+import joblib
 
 import psycopg2
 from psycopg2.extras import DictCursor, execute_values
@@ -22,7 +24,7 @@ from unidecode import unidecode
 
 # For wolf
 DB_CONNECT = "dbname=musicbrainz_db user=musicbrainz host=localhost port=5432 password=musicbrainz"
-ARTIST_CONFIDENCE_THRESHOLD = .7
+ARTIST_CONFIDENCE_THRESHOLD = .45
 CHUNK_SIZE = 100000
 MAX_THREADS = 8
 
@@ -36,6 +38,20 @@ def ngrams(string, n=3):
     ngrams = zip(*[string[i:] for i in range(n)])
     return [''.join(ngram) for ngram in ngrams]
 
+class IndexDataPickleList(list):
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        try:
+            # Don't pickle index
+            del state["index"]
+        except KeyError:
+            pass
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self.index = None
+
 
 class FuzzyIndex:
     '''
@@ -46,8 +62,11 @@ class FuzzyIndex:
     '''
 
     def __init__(self):
-        self.index = None
-        self.vectorizer = None
+        self.index_data = None
+        self.index = nmslib.init(method='simple_invindx',
+                                 space='negdotprod_sparse_fast',
+                                 data_type=nmslib.DataType.SPARSE_VECTOR)
+        self.vectorizer = TfidfVectorizer(min_df=1, analyzer=ngrams)
 
     @staticmethod
     def encode_string(text):
@@ -55,33 +74,32 @@ class FuzzyIndex:
             return None
         return unidecode(re.sub(" +", "", re.sub(r'[^\w ]+', '', text)).strip().lower())[:MAX_ENCODED_STRING_LENGTH]
 
-    def build(self, search_data):
-        """
-            Builds a new index and saves it to disk and keeps it in ram as well.
-        """
-
-        lookup_strings = []
-        lookup_ids = []
-        for value, lookup_id in search_data:
-            lookup_strings.append(value)
-            lookup_ids.append(lookup_id)
-
-        self.vectorizer = TfidfVectorizer(min_df=1, analyzer=ngrams)
-
-        # The fit_transform function carries out disk writes, which slows things way down.
-        # How does one ensure that this is a fully in-memory operation?
-        lookup_matrix = self.vectorizer.fit_transform(lookup_strings)
-
-        self.index = nmslib.init(method='simple_invindx',
-                                 space='negdotprod_sparse_fast',
-                                 data_type=nmslib.DataType.SPARSE_VECTOR)
-        self.index.addDataPointBatch(lookup_matrix, lookup_ids)
+    def build(self, index_data, field):
+        self.index_data = index_data
+        strings = [ x[field] for x in index_data ]
+        lookup_matrix = self.vectorizer.fit_transform(strings)
+        self.index.addDataPointBatch(lookup_matrix, list(range(len(strings))))
         self.index.createIndex()
 
+    def save(self, index_dir):
+        v_file = os.path.join(index_dir, "vectorizer.pickle")
+        i_file = os.path.join(index_dir, "nmslib_index.pickle")
+        d_file = os.path.join(index_dir, "index_data.pickle")
+
+        pickle.dump(self.vectorizer, open(v_file, "wb"))
+        self.index.saveIndex(i_file, save_data=True)
+        pickle.dump(self.index_data, open(d_file, "wb"))
+
+    def load(self, index_dir):
+        v_file = os.path.join(index_dir, "vectorizer.pickle")
+        i_file = os.path.join(index_dir, "nmslib_index.pickle")
+        d_file = os.path.join(index_dir, "index_data.pickle")
+
+        self.vectorizer = pickle.load(open(v_file, "rb"))
+        self.index.loadIndex(i_file, load_data=True)
+        self.index_data = pickle.load(open(d_file, "rb"))
+
     def search(self, query_string):
-        """
-            Return IDs for the matches in a list. Returns a list of dicts with keys of lookup_string, confidence and recording_id.
-        """
         if self.index is None:
             raise IndexError("Must build index before searching")
 
@@ -90,8 +108,10 @@ class FuzzyIndex:
         results = self.index.knnQueryBatch(query_matrix, k=15, num_threads=5)
 
         output = []
-        for index, conf in zip(results[0][0], results[0][1]):
-            output.append({"confidence": fabs(conf), "id": index, "text": query_string })
+        for i, conf in zip(results[0][0], results[0][1]):
+            data = self.index_data[i]
+            data["confidence"] = fabs(conf)
+            output.append(data)
 
         return output
 
@@ -99,53 +119,66 @@ class FuzzyIndex:
 class MappingLookupIndex:
 
     def __init__(self):
-        self.artist_data = {}
+        self.artist_data = IndexDataPickleList()
         self.return_value_queue = Queue()
 
-    def create_indexes(self, conn):
+    def create(self, conn):
 
         # TODO: VA and more complex artist credits probably not handled correctly
         self.artist_index = FuzzyIndex()
-        self.recording_indexes = {}
 
         last_artist_credit_id = -1
         last_row = None
 
         t0 = monotonic()
-        # Read from CSV file, since no sort, faster to iterate
-        with open('canonical_musicbrainz_data.csv', newline='') as csvfile:
-            reader = csv.reader(csvfile)
-
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as curs:
             recording_data = []
-            for i, csv_row in enumerate(reader):
+
+            print("execute query")
+            curs.execute(""" SELECT artist_credit_id
+                                  , artist_mbids
+                                  , artist_credit_name
+                                  , release_name
+                                  , release_mbid
+                                  , recording_name
+                                  , recording_mbid
+                               FROM mapping.canonical_musicbrainz_data
+                               WHERE artist_credit_id < 100000
+                               ORDER BY artist_credit_id""")
+
+            print("load data")
+            for i, row in enumerate(curs):
                 if i == 0:
                     continue
 
                 if i % 1000000 == 0:
                     print("Indexed %d rows" % i)
 
-                # Make the data look like it came from PG
-                row = { "id": int(csv_row[0]),
-                        "artist_credit_id": int(csv_row[1]),
-                        "artist_credit_name": csv_row[3],
-                        "recording_name": csv_row[7]
-                      }
-
                 if last_artist_credit_id >= 0 and row["artist_credit_id"] != last_artist_credit_id:
-                    self.recording_indexes[last_artist_credit_id] = recording_data
+                    self.artist_data.append({ "artist_mbids": last_row["artist_mbids"],
+                                              "artist_credit_name": last_row["artist_credit_name"],
+                                              "text": FuzzyIndex.encode_string(last_row["artist_credit_name"]),
+                                              "index": None,
+                                              "recording_data": recording_data})
                     recording_data = []
-                    self.artist_data[last_row["artist_credit_id"]] = (FuzzyIndex.encode_string(last_row["artist_credit_name"]),
-                                                                                               last_row["artist_credit_id"])
 
-                encoded = FuzzyIndex.encode_string(row["recording_name"])
-                if encoded:
-                    recording_data.append((encoded, row["id"]))
+                recording_data.append({ "text": FuzzyIndex.encode_string(row["recording_name"]) or "",
+                                        "recording_mbid": row["recording_mbid"],
+                                        "recording_name": row["recording_name"] })
                 last_row = row
                 last_artist_credit_id = row["artist_credit_id"]
 
-        self.artist_index.build(self.artist_data.values())
+        self.artist_index.build(self.artist_data, "text")
+
         t1 = monotonic()
         print("loaded data and build artist index in %.1f seconds." % (t1 - t0))
+
+    def save(self, index_dir):
+        self.artist_index.save(index_dir)
+
+    def load(self, index_dir):
+        self.artist_index = FuzzyIndex()
+        self.artist_index.load(index_dir)
 
     def search(self, artist_name, recording_name):
 
@@ -156,60 +189,62 @@ class MappingLookupIndex:
         t0 = monotonic()
         artists = self.artist_index.search(artist_name)
         t1 = monotonic()
-        print("artist index search: %.1fms" % ((t1-t0)*1000)
+        print("artist index search: %.1fms" % ((t1-t0)*1000))
         results = []
 
         # For each hit, search recordings.
         for artist in artists:
-            artist["id"] = int(artist["id"])
-            artist["text"] = self.artist_data[artist["id"]][0]
             if artist["confidence"] > ARTIST_CONFIDENCE_THRESHOLD:
-                print("search recordings for: '%s'" % artist["text"])
+                print("search recordings for: '%s' " % artist["artist_credit_name"], artist["artist_mbids"])
 
                 # Fetch the index for the recordings -- if not built yet, build it!
-                search_index = self.recording_indexes[artist["id"]]
-                if not isinstance(search_index, FuzzyIndex):
-                    fi = FuzzyIndex()
-                    fi.build(search_index)
-                    self.recording_indexes[artist["id"]] = fi
-                    search_index = fi
+                if artist["index"] is None:
+                    index = FuzzyIndex()
+                    index.build(artist["recording_data"], "text")
+                    artist["index"] = index
 
-                rec_results = search_index.search(FuzzyIndex.encode_string(recording_name))
+                rec_results = artist["index"].search(recording_name)
                 for result in rec_results:
                     results.append({ "artist_name": artist["text"],
-                                     "artist_credit_id": artist["id"],
+                                     "artist_mbids": artist["artist_mbids"],
                                      "artist_confidence": artist["confidence"],
-                                     "recording_name": result["text"],
-                                     "canonical_id": result["id"],
+                                     "recording_name": result["recording_name"],
+                                     "recording_mbid": result["recording_mbid"],
                                      "recording_confidence": result["confidence"] })
+            else:
+                print("Artist '%s' %.1f ignored" % (artist["text"], artist["confidence"]))
 
-        return results
+        return sorted(results, key=lambda a: (a["artist_confidence"], a["recording_confidence"]), reverse=True)
 
 
 mi = MappingLookupIndex()
+if sys.argv[1] == "build":
+    sklearn.set_config(working_memory=1024 * 100)
+    with parallel_backend('threading', n_jobs=MAX_THREADS):
+        with psycopg2.connect(DB_CONNECT) as conn:
+            mi.create(conn)
+            mi.save("index")
+else:
+    mi.load("index")
+    while True:
+        query = input("artist,recording>")
+        if not query:
+            continue
+        try:
+            artist_name, recording_name = query.split(",")
+        except ValueError:
+            print("Input must be artist then recording, separated by comma")
+            continue
 
-sklearn.set_config(working_memory=1024 * 100)
-with parallel_backend('threading', n_jobs=MAX_THREADS):
-    with psycopg2.connect(DB_CONNECT) as conn:
-        mi.create_indexes(conn)
-        while True:
-            query = input("artist,recording>")
-            if not query:
-                continue
-            try:
-                artist_name, recording_name = query.split(",")
-            except ValueError:
-                print("Input must be artist then recording, separated by comma")
-                continue
-            t0 = monotonic()
-            results = mi.search(artist_name, recording_name)
-            t1 = monotonic()
-            for result in results:
-                print("%-40s %.3f %6d %-40s %.3f %6d" % (result["artist_name"],
-                                                         result["artist_confidence"],
-                                                         result["artist_credit_id"],
-                                                         result["recording_name"],
-                                                         result["recording_confidence"],
-                                                         result["canonical_id"]))
-                
-            print("%.1fms total search time" % ((t1 - t0) * 1000))
+        t0 = monotonic()
+        results = mi.search(artist_name, recording_name)
+        t1 = monotonic()
+        for result in results:
+            print("%-40s %.3f %s %-40s %.3f %s" % (result["artist_name"],
+                                                    result["artist_confidence"],
+                                                    result["artist_mbids"],
+                                                    result["recording_name"],
+                                                    result["recording_confidence"],
+                                                    result["recording_mbid"]))
+            
+        print("%.1fms total search time" % ((t1 - t0) * 1000))
