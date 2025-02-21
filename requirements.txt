@@ -2,4 +2,4 @@ scikit_learn
 unidecode
 nmslib-metabrainz
 psycopg2-binary
-neofuzz
+readline

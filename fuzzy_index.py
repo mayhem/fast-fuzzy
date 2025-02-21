@@ -21,6 +21,7 @@ from joblib import parallel_backend
 
 import nmslib
 from unidecode import unidecode
+from utils import ngrams, IndexDataPickleList
 
 # For wolf
 DB_CONNECT = "dbname=musicbrainz_db user=musicbrainz host=localhost port=5432 password=musicbrainz"
@@ -30,28 +31,6 @@ MAX_THREADS = 8
 
 # TOTUNE
 MAX_ENCODED_STRING_LENGTH = 30
-
-def ngrams(string, n=3):
-    """ Take a lookup string (noise removed, lower case, etc) and turn into a list of trigrams """
-
-    string = ' ' + string + ' '  # pad names for ngrams...
-    ngrams = zip(*[string[i:] for i in range(n)])
-    return [''.join(ngram) for ngram in ngrams]
-
-class IndexDataPickleList(list):
-    def __getstate__(self):
-        state = self.__dict__.copy()
-        try:
-            # Don't pickle index
-            del state["index"]
-        except KeyError:
-            pass
-        return state
-
-    def __setstate__(self, state):
-        self.__dict__.update(state)
-        self.index = None
-
 
 class FuzzyIndex:
     '''
@@ -143,8 +122,8 @@ class MappingLookupIndex:
                                   , recording_name
                                   , recording_mbid
                                FROM mapping.canonical_musicbrainz_data
-                               WHERE artist_credit_id < 100000
                                ORDER BY artist_credit_id""")
+#                               WHERE artist_credit_id < 100000
 
             print("load data")
             for i, row in enumerate(curs):
@@ -189,13 +168,13 @@ class MappingLookupIndex:
         t0 = monotonic()
         artists = self.artist_index.search(artist_name)
         t1 = monotonic()
-        print("artist index search: %.1fms" % ((t1-t0)*1000))
+#        print("artist index search: %.1fms" % ((t1-t0)*1000))
         results = []
 
         # For each hit, search recordings.
         for artist in artists:
             if artist["confidence"] > ARTIST_CONFIDENCE_THRESHOLD:
-                print("search recordings for: '%s' " % artist["artist_credit_name"], artist["artist_mbids"])
+#                print("search recordings for: '%s' " % artist["artist_credit_name"], artist["artist_mbids"])
 
                 # Fetch the index for the recordings -- if not built yet, build it!
                 if artist["index"] is None:
@@ -211,40 +190,43 @@ class MappingLookupIndex:
                                      "recording_name": result["recording_name"],
                                      "recording_mbid": result["recording_mbid"],
                                      "recording_confidence": result["confidence"] })
-            else:
-                print("Artist '%s' %.1f ignored" % (artist["text"], artist["confidence"]))
+#            else:
+#                print("Artist '%s' %.1f ignored" % (artist["text"], artist["confidence"]))
 
         return sorted(results, key=lambda a: (a["artist_confidence"], a["recording_confidence"]), reverse=True)
 
-
-mi = MappingLookupIndex()
-if sys.argv[1] == "build":
-    sklearn.set_config(working_memory=1024 * 100)
-    with parallel_backend('threading', n_jobs=MAX_THREADS):
-        with psycopg2.connect(DB_CONNECT) as conn:
-            mi.create(conn)
-            mi.save("index")
-else:
-    mi.load("index")
-    while True:
-        query = input("artist,recording>")
-        if not query:
-            continue
-        try:
-            artist_name, recording_name = query.split(",")
-        except ValueError:
-            print("Input must be artist then recording, separated by comma")
-            continue
-
+if __name__ == "__main__":
+    mi = MappingLookupIndex()
+    if sys.argv[1] == "build":
+        sklearn.set_config(working_memory=1024 * 100)
+        with parallel_backend('threading', n_jobs=MAX_THREADS):
+            with psycopg2.connect(DB_CONNECT) as conn:
+                mi.create(conn)
+                mi.save("index")
+    else:
         t0 = monotonic()
-        results = mi.search(artist_name, recording_name)
+        mi.load("index")
         t1 = monotonic()
-        for result in results:
-            print("%-40s %.3f %s %-40s %.3f %s" % (result["artist_name"],
-                                                    result["artist_confidence"],
-                                                    result["artist_mbids"],
-                                                    result["recording_name"],
-                                                    result["recording_confidence"],
-                                                    result["recording_mbid"]))
-            
-        print("%.1fms total search time" % ((t1 - t0) * 1000))
+        print("artist index load: %.1fs" % (t1-t0))
+        while True:
+            query = input("artist,recording>")
+            if not query:
+                continue
+            try:
+                artist_name, recording_name = query.split(",")
+            except ValueError:
+                print("Input must be artist then recording, separated by comma")
+                continue
+
+            t0 = monotonic()
+            results = mi.search(artist_name, recording_name)
+            t1 = monotonic()
+            for result in results:
+                print("%-40s %.3f %s %-40s %.3f %s" % (result["artist_name"],
+                                                        result["artist_confidence"],
+                                                        result["artist_mbids"],
+                                                        result["recording_name"],
+                                                        result["recording_confidence"],
+                                                        result["recording_mbid"]))
+                
+            print("%.1fms total search time" % ((t1 - t0) * 1000))
