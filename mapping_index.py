@@ -31,8 +31,7 @@ class MappingLookupIndex:
 
         last_artist_credit_id = -1
         last_row = None
-        current_part_ch = None
-        partitions = []
+        current_part_id = None
 
         t0 = monotonic()
 
@@ -58,8 +57,8 @@ class MappingLookupIndex:
                                      ON rec.gid = recording_mbid
                                    JOIN release rel
                                      ON rel.gid = release_mbid
-                                  WHERE artist_credit_id < 1000
                                ORDER BY artist_credit_id""")
+#                                 WHERE artist_credit_id < 10000
 
                 print("load data")
                 for i, row in enumerate(curs):
@@ -73,9 +72,6 @@ class MappingLookupIndex:
                         # Save artist data for artist index
                         encoded = FuzzyIndex.encode_string(last_row["artist_credit_name"])
                         artist_data.append({ "text": encoded, "index": None })
-                        if current_part_ch != encoded[0]:
-                            partitions.append({ "ch": encoded[0], "offset": relrec_offset })
-                            current_part_ch = encoded[0]
             
                         # Remove duplicate release/id entries
                         release_data = [dict(t) for t in {tuple(d.items()) for d in release_data}]
@@ -88,7 +84,7 @@ class MappingLookupIndex:
            
                         # Write out the release/recording data and update artist_offsets
                         relrec_data_size = len(p_release_data) + len(p_recording_data)
-                        relrec_offsets.append({ "id": last_row["artist_credit_name"],
+                        relrec_offsets.append({ "id": last_row["artist_credit_id"],
                                                 "offset": relrec_offset,
                                                 "length": relrec_data_size })
                         relrec_offset += relrec_data_size
@@ -107,20 +103,20 @@ class MappingLookupIndex:
                 p_release_data = dumps(release_data)
                 p_recording_data = dumps(recording_data)
                 relrec_data_size = len(p_release_data) + len(p_recording_data)
-                relrec_offsets.append({ "id": last_row["artist_credit_name"],
+                relrec_offsets.append({ "id": last_row["artist_credit_id"],
                                         "offset": relrec_offset,
                                         "length": relrec_data_size })
                 relrec_f.write(p_release_data)
                 relrec_f.write(p_recording_data)
 
         print("Write relrec offsets table")
-        r_file = os.path.join(index_dir, "relrec_offset_table.pickle")
+        r_file = os.path.join(index_dir, "relrec_offset_table.binary")
         with open(r_file, "wb") as f:
-            dump(relrec_offsets, f)
-        print("Write partitions table")
-        p_file = os.path.join(index_dir, "partitions_offset_table.pickle")
-        with open(p_file, "wb") as f:
-            dump(partitions, f)
+            for relrec in relrec_offsets:
+                f.write(relrec["offset"].to_bytes(4, 'little') +
+                        relrec["length"].to_bytes(4, 'little') +
+                        relrec["id"].to_bytes(4, 'little'))
+
         print("Build artist index")
         self.artist_index.build(artist_data, "text")
         print("Save artist index")
