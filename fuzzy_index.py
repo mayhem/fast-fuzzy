@@ -64,22 +64,26 @@ class FuzzyIndex:
         self.index.createIndex()
 
     def save(self, index_dir):
-        v_file = os.path.join(index_dir, "vectorizer.pickle")
+        v_file = os.path.join(index_dir, "nmslib_vectorizer.pickle")
         i_file = os.path.join(index_dir, "nmslib_index.pickle")
-        d_file = os.path.join(index_dir, "index_data.pickle")
+        d_file = os.path.join(index_dir, "additional_index_data.pickle")
 
-        pickle.dump(self.vectorizer, open(v_file, "wb"))
+        with open(v_file, "wb") as f:
+            pickle.dump(self.vectorizer, f)
         self.index.saveIndex(i_file, save_data=True)
-        pickle.dump(self.index_data, open(d_file, "wb"))
+        with open(d_file, "wb") as f:
+            pickle.dump(self.index_data, f)
 
     def load(self, index_dir):
-        v_file = os.path.join(index_dir, "vectorizer.pickle")
+        v_file = os.path.join(index_dir, "nmslib_vectorizer.pickle")
         i_file = os.path.join(index_dir, "nmslib_index.pickle")
-        d_file = os.path.join(index_dir, "index_data.pickle")
+        d_file = os.path.join(index_dir, "additional_index_data.pickle")
 
-        self.vectorizer = pickle.load(open(v_file, "rb"))
+        with open(v_file, "rb") as f:
+            self.vectorizer = pickle.load(f)
         self.index.loadIndex(i_file, load_data=True)
-        self.index_data = pickle.load(open(d_file, "rb"))
+        with open(d_file, "rb") as f:
+            self.index_data = pickle.load(f)
 
     def search(self, query_string):
         if self.index is None:
