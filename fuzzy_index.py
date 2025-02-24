@@ -10,14 +10,12 @@ from queue import Queue
 import pickle
 import re
 import sys
-import joblib
 
 import psycopg2
 from psycopg2.extras import DictCursor, execute_values
 
 import sklearn
 from sklearn.feature_extraction.text import TfidfVectorizer
-from joblib import parallel_backend
 
 import nmslib
 from unidecode import unidecode
@@ -25,12 +23,16 @@ from utils import ngrams, IndexDataPickleList
 
 # For wolf
 DB_CONNECT = "dbname=musicbrainz_db user=musicbrainz host=localhost port=5432 password=musicbrainz"
+
+# For wolf/docker
+#DB_CONNECT = "dbname=musicbrainz_db user=musicbrainz host=musicbrainz-docker_db_1 port=5432 password=musicbrainz"
+
 ARTIST_CONFIDENCE_THRESHOLD = .45
 CHUNK_SIZE = 100000
 MAX_THREADS = 8
 
 # TOTUNE
-MAX_ENCODED_STRING_LENGTH = 30
+MAX_ENCODED_STRING_LENGTH = 30 
 
 class FuzzyIndex:
     '''
@@ -49,9 +51,10 @@ class FuzzyIndex:
 
     @staticmethod
     def encode_string(text):
+        """Remove spaces, punctuation, convert non-ascii characters to some romanized equivalent, lower case, return"""
         if text is None:
             return None
-        return unidecode(re.sub(" +", "", re.sub(r'[^\w ]+', '', text)).strip().lower())[:MAX_ENCODED_STRING_LENGTH]
+        return unidecode(re.sub("[ _]+", "", re.sub(r'[^\w ]+', '', text)).strip().lower())[:MAX_ENCODED_STRING_LENGTH]
 
     def build(self, index_data, field):
         self.index_data = index_data
