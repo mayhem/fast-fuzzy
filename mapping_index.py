@@ -3,6 +3,7 @@
 from time import monotonic
 from pickle import dumps, dump
 import os
+from struct import pack
 import sys
 
 import psycopg2
@@ -57,8 +58,8 @@ class MappingLookupIndex:
                                      ON rec.gid = recording_mbid
                                    JOIN release rel
                                      ON rel.gid = release_mbid
+                                 WHERE artist_credit_id < 10000
                                ORDER BY artist_credit_id""")
-#                                 WHERE artist_credit_id < 10000
 
                 print("load data")
                 for i, row in enumerate(curs):
@@ -113,9 +114,7 @@ class MappingLookupIndex:
         r_file = os.path.join(index_dir, "relrec_offset_table.binary")
         with open(r_file, "wb") as f:
             for relrec in relrec_offsets:
-                f.write(relrec["offset"].to_bytes(4, 'little') +
-                        relrec["length"].to_bytes(4, 'little') +
-                        relrec["id"].to_bytes(4, 'little'))
+                f.write(pack("III", relrec["offset"], relrec["length"], relrec["id"]))
 
         print("Build artist index")
         self.artist_index.build(artist_data, "text")
@@ -129,4 +128,4 @@ class MappingLookupIndex:
 if __name__ == "__main__":
     mi = MappingLookupIndex()
     with psycopg2.connect(DB_CONNECT) as conn:
-        mi.create(conn, "index")
+        mi.create(conn, "small_index")

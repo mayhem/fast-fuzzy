@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 from bisect import bisect_left
+from pickle import load
 from time import monotonic
-from pickle import loads, load
+from struct import unpack
+import struct
 import os
 import sys
 
@@ -36,9 +38,12 @@ class MappingLookupSearch:
                 row = f.read(12)
                 if not row:
                     break
-                self.relrec_offsets.append({ "offset": int.from_bytes(row[0:3], byteorder='little'),
-                                             "length": int.from_bytes(row[4:7], byteorder='little'),
-                                             "id": int.from_bytes(row[8:11], byteorder='little')})
+
+                offset, length, id = struct.unpack("III", row)
+                self.relrec_offsets.append({ "offset": offset, 
+                                             "length": length,
+                                             "id": id })
+                print(self.relrec_offsets[-1])
         t1 = monotonic()
         print("loaded data in %.1f seconds." % (t1 - t0))
 
@@ -58,19 +63,29 @@ class MappingLookupSearch:
             self.shards.append({ "offset": relrec["offset"], "id": relrec["id"], "length": relrec["length"] })
 
 
-    def load_shard(self, shard):
+    def load_shard(self, shard, offset, length):
         """ load/init the data needed to operate the shard, loads relrecs_offsets for this shard! """
 
-        offset = self.shards[shard]["offset"]
-        length = self.shards[shard]["length"]
+#        offset = self.shards[shard]["offset"]
+#        length = self.shards[shard]["length"]
 
-        r_file = os.path.join(self.index_dir, "relrec_offset_table.pickle")
+        r_file = os.path.join(self.index_dir, "relrec_offset_table.binary")
         with open(r_file, "rb") as f:
             f.seek(offset)
             data = f.read(length)
 
-            self.relrec_offsets = load(f)
+        d_offset = 0
+        self.relrec_offsets = []
+        while True:
+            try:
+                offset, length, id = struct.unpack("III", data[d_offset:d_offset+12])
+            except struct.error:
+                break
 
+            self.relrec_offsets.append({ "offset": offset, 
+                                         "length": length,
+                                         "id": id })
+            d_offset += 12
 
     def load_relrecs_for_artist(self, artist_credit_id):
         """ Load one artist's release and recordings data from disk. Correct relrec_offsets chunk must be loaded. """
@@ -94,5 +109,6 @@ class MappingLookupSearch:
 
 if __name__ == "__main__":
     s = MappingLookupSearch("small_index", 8)
-    s.determine_shards()
+#    s.determine_shards()
+    s.load_shard(0, 0, 16416303)
     s.load_relrecs_for_artist(65)
