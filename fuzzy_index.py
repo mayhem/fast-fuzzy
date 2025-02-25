@@ -12,7 +12,8 @@ import nmslib
 from unidecode import unidecode
 from utils import ngrams
 
-MAX_ENCODED_STRING_LENGTH = 30 
+MAX_ENCODED_STRING_LENGTH = 30
+
 
 class FuzzyIndex:
     '''
@@ -24,9 +25,7 @@ class FuzzyIndex:
 
     def __init__(self):
         self.index_data = None
-        self.index = nmslib.init(method='simple_invindx',
-                                 space='negdotprod_sparse_fast',
-                                 data_type=nmslib.DataType.SPARSE_VECTOR)
+        self.index = nmslib.init(method='simple_invindx', space='negdotprod_sparse_fast', data_type=nmslib.DataType.SPARSE_VECTOR)
         self.vectorizer = TfidfVectorizer(min_df=1, analyzer=ngrams)
 
     @staticmethod
@@ -38,7 +37,7 @@ class FuzzyIndex:
 
     def build(self, index_data, field):
         self.index_data = index_data
-        strings = [ x[field] for x in index_data ]
+        strings = [x[field] for x in index_data]
         lookup_matrix = self.vectorizer.fit_transform(strings)
         self.index.addDataPointBatch(lookup_matrix, list(range(len(strings))))
         self.index.createIndex()
