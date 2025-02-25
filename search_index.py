@@ -25,7 +25,11 @@ class MappingLookupSearch:
         self.shards = None
 
         self.relrec_offsets = None
-        self._ids = None
+        self._relrec_ids = None
+
+        self.artist_index = None
+        self.relrec_release_indexes = {}
+        self.relrec_recording_indexes = {}
 
     def determine_shards(self):
         """ load the offsets table to determine how to shard this index, loads all relrec_offsets! """
@@ -87,12 +91,19 @@ class MappingLookupSearch:
                                          "id": id })
             d_offset += 12
 
+        self.load_artist_index()
+
+
+    def load_artist_index(self):
+        self.artist_index = FuzzyIndex()
+        self.artist_index.load(self.index_dir)
+
     def load_relrecs_for_artist(self, artist_credit_id):
         """ Load one artist's release and recordings data from disk. Correct relrec_offsets chunk must be loaded. """
 
-        if self._ids is None:
-            self._ids = [ x["id"] for x in self.relrec_offsets ]
-        offset = bsearch(self._ids, artist_credit_id)
+        if self._relrec_ids is None:
+            self._relrec_ids = [ x["id"] for x in self.relrec_offsets ]
+        offset = bsearch(self._relrec_ids, artist_credit_id)
         if offset < 0:
             print("artist not found")
             return
@@ -105,7 +116,47 @@ class MappingLookupSearch:
             release_data = load(f)
             recording_data = load(f)
 
-        print(release_data)
+        release_index = FuzzyIndex()
+        release_index.build(release_data, "text")
+        recording_index = FuzzyIndex()
+        recording_index.build(recording_data, "text")
+
+        self.relrec_release_indexes[artist_credit_id] = release_index
+        self.relrec_recording_indexes[artist_credit_id] = recording_index
+
+    def search(self, artist_name, release_name, recording_name):
+
+        artist_name = FuzzyIndex.encode_string(artist_name)
+        recording_name = FuzzyIndex.encode_string(recording_name)
+        release_name = FuzzyIndex.encode_string(release_name)
+
+        t0 = monotonic()
+        artists = self.artist_index.search(artist_name)
+        t1 = monotonic()
+        results = []
+
+        # For each hit, search recordings.
+        for artist in artists:
+            if artist["confidence"] > ARTIST_CONFIDENCE_THRESHOLD:
+
+                # Fetch the index for the recordings -- if not built yet, build it!
+                if 
+                    index = FuzzyIndex()
+                    index.build(artist["recording_data"], "text")
+                    artist["index"] = index
+
+                rec_results = artist["index"].search(recording_name)
+                for result in rec_results:
+                    results.append({ "artist_name": artist["text"],
+                                     "artist_mbids": artist["artist_mbids"],
+                                     "artist_confidence": artist["confidence"],
+                                     "recording_name": result["recording_name"],
+                                     "recording_mbid": result["recording_mbid"],
+                                     "recording_confidence": result["confidence"] })
+#            else:
+#                print("Artist '%s' %.1f ignored" % (artist["text"], artist["confidence"]))
+
+
 
 if __name__ == "__main__":
     s = MappingLookupSearch("small_index", 8)
