@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 
 from bisect import bisect_left
+import fcntl
+import json
 from pickle import load
-from time import monotonic
+from random import randint
+from time import monotonic, sleep
 from struct import unpack
 import struct
 import os
@@ -22,7 +25,7 @@ class MappingLookupSearch:
     def __init__(self, index_dir, num_shards):
         self.index_dir = index_dir
         self.num_shards = num_shards
-        self.shards = None
+        self.shard = None
 
         self.relrec_offsets = None
         self._relrec_ids = None
@@ -30,6 +33,34 @@ class MappingLookupSearch:
         self.artist_index = None
         self.relrec_release_indexes = {}
         self.relrec_recording_indexes = {}
+
+    def load_shard_details(self, shard_dir):
+
+        shard = randint(0, self.num_shards - 1)
+        done = False
+        while not done:
+            file_path = os.path.join(shard_dir, "shard_%03d.json" % shard)
+            with open(file_path, "rb+") as f:
+                try:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                except OSError:
+                    shard = (shard + 1) % self.num_shards
+                    sleep(1)
+                    continue
+            
+                # Read the data
+                data = json.loads(f.read())
+
+                # Now truncate the file so another proc cant read it
+                f.seek(0)
+                f.truncate()
+                done = True
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+        os.unlink(file_path)
+        self.load_shard(shard, data["offset"], data["length"])
+
+        return self.shard
 
     def determine_shards(self):
         """ load the offsets table to determine how to shard this index, loads all relrec_offsets! """
@@ -54,7 +85,7 @@ class MappingLookupSearch:
         total = len(self.relrec_offsets)
         recs_per_shard = total // self.num_shards
 
-        self.shards = []
+        shards = []
         for shard in range(self.num_shards):
             relrec = self.relrec_offsets[shard * recs_per_shard]
             next_relrec = self.relrec_offsets[(shard + 1) * recs_per_shard]
@@ -64,7 +95,9 @@ class MappingLookupSearch:
                 eof = self.relrec_offsets[-1]["offset"] + self.relrec_offsets[-1]["length"]
                 length = eof - relrec["offset"]
             print("shard %d off: %12d id: %12d len: %12d" % (shard, relrec["offset"], relrec["id"], length))
-            self.shards.append({ "offset": relrec["offset"], "id": relrec["id"], "length": relrec["length"] })
+            shards.append({ "offset": relrec["offset"], "id": relrec["id"], "length": relrec["length"] })
+
+        return shards
 
 
     def load_shard(self, shard, offset, length):
@@ -92,6 +125,7 @@ class MappingLookupSearch:
             d_offset += 12
 
         self.load_artist_index()
+        self.shard = shard
 
 
     def load_artist_index(self):
@@ -130,22 +164,19 @@ class MappingLookupSearch:
         recording_name = FuzzyIndex.encode_string(recording_name)
         release_name = FuzzyIndex.encode_string(release_name)
 
-        t0 = monotonic()
         artists = self.artist_index.search(artist_name)
-        t1 = monotonic()
         results = []
 
+        # TODO: Add release searching, detuning, etc
         # For each hit, search recordings.
         for artist in artists:
             if artist["confidence"] > ARTIST_CONFIDENCE_THRESHOLD:
 
                 # Fetch the index for the recordings -- if not built yet, build it!
-                if 
-                    index = FuzzyIndex()
-                    index.build(artist["recording_data"], "text")
-                    artist["index"] = index
+                if artist["id"] not in self.relrec_recording_indexes:
+                    load_relrecs_for_artist(artist["id"])
 
-                rec_results = artist["index"].search(recording_name)
+                rec_results = self.relrec_recording_indexes[artist["id"]].search(recording_name)
                 for result in rec_results:
                     results.append({ "artist_name": artist["text"],
                                      "artist_mbids": artist["artist_mbids"],
@@ -153,13 +184,11 @@ class MappingLookupSearch:
                                      "recording_name": result["recording_name"],
                                      "recording_mbid": result["recording_mbid"],
                                      "recording_confidence": result["confidence"] })
-#            else:
-#                print("Artist '%s' %.1f ignored" % (artist["text"], artist["confidence"]))
 
+        return results
 
 
 if __name__ == "__main__":
     s = MappingLookupSearch("small_index", 8)
-#    s.determine_shards()
     s.load_shard(0, 0, 16416303)
     s.load_relrecs_for_artist(65)
