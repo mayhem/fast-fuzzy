@@ -25,6 +25,7 @@ class MappingLookupSearch:
         self.index_dir = index_dir
         self.num_shards = num_shards
         self.shard = None
+        self.shards = None
 
         self.relrec_offsets = None
         self._relrec_ids = None
@@ -59,7 +60,7 @@ class MappingLookupSearch:
             partition_offsets[i].append((partition_offsets[i+1][1] - 1) - partition_offsets[i][1])
         del partition_offsets[-1]
 
-
+        # This is a very pathetic attempt at sharding. This needs real life input to be improved
         while True:
             done = True
             for i, part in enumerate(partition_offsets[:-1]):
@@ -71,14 +72,23 @@ class MappingLookupSearch:
                     done = False
                     break
 
-            if done:
+            if done or len(partition_offsets) == self.num_shards:
                 break
 
-        return [ { "partition_initials": p[0], "offset": p[1], "length": p[2] } for p in partition_offsets ]
+        self.shards = [ { "partition_initials": p[0], "offset": p[1], "length": p[2] } for p in partition_offsets ]
+        for i, shard in enumerate(self.shards):
+            print("%d %12d %12d %s" % (i, shard["offset"], shard["length"], shard["partition_initials"]))
 
 
-    def load_shard(self, shard, offset, length):
+    def load_shard(self, shard):
         """ load/init the data needed to operate the shard, loads relrecs_offsets for this shard! """
+
+        if self.shards is None:
+            self.split_shards()
+
+        offset = self.shards[shard]["offset"]
+        length = self.shards[shard]["length"]
+        self.shard = shard
 
         r_file = os.path.join(self.index_dir, "relrec_offset_table.binary")
         with open(r_file, "rb") as f:
@@ -98,13 +108,7 @@ class MappingLookupSearch:
                                          "id": id })
             d_offset += 12
 
-        self.load_artist_index()
-        self.shard = shard
 
-
-    def load_artist_index(self):
-        self.artist_index = FuzzyIndex()
-        self.artist_index.load(self.index_dir)
 
     def load_relrecs_offsets(self):
         t0 = monotonic()
@@ -150,16 +154,16 @@ class MappingLookupSearch:
         self.relrec_release_indexes[artist_credit_id] = release_index
         self.relrec_recording_indexes[artist_credit_id] = recording_index
 
-    def search(self, artist_name, release_name, recording_name):
+    def search(self, req):
 
-        artist_name = FuzzyIndex.encode_string(artist_name)
-        recording_name = FuzzyIndex.encode_string(recording_name)
-        release_name = FuzzyIndex.encode_string(release_name)
+        artist_ids = req["artist_ids"]
+        artist_name = FuzzyIndex.encode_string(req["artist_name"])
+        recording_name = FuzzyIndex.encode_string(req["recording_name"])
+        release_name = FuzzyIndex.encode_string(req["release_name"])
 
-        artists = self.artist_index.search(artist_name)
+        # Implement the actual search here. lol
 
-        request = { "artist": artist, "release": release, "recording": recording }
-        results = []
+        return { "poot": True }
 
         # TODO: Add release searching, detuning, etc
         # For each hit, search recordings.
@@ -185,5 +189,6 @@ class MappingLookupSearch:
 if __name__ == "__main__":
     s = MappingLookupSearch("index", 8)
     s.split_shards()
-#    s.load_shard(0, 0, 16416303)
-#    s.load_relrecs_for_artist(65)
+    s.load_shard(0)
+    results = s.search([65], "portishead", "dummy", "strangers")
+    print(results)

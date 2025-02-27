@@ -2,24 +2,20 @@
 
 from multiprocessing import Queue, Process
 
-from mapping_search import MappingLookupSearch
+from search_index import MappingLookupSearch
 
 
-class MappingLookupProcess:
+def mapping_lookup_process(in_q, out_q, index_dir, num_shards, shard):
+    ms = MappingLookupSearch(index_dir, num_shards)
+    ms.load_shard(shard)
 
-    def __init__(self, in_q, out_q, index_dir, shard):
-        self.in_q = in_q
-        self.out_q = out_q
-        self.index_dir = index_dir
-        self.shard = shard
+    while True:
+        print("shard %d waiting" % shard)
+        req = in_q.get()
+        print("shard %d got req: " % shard, req)
 
-        self.ms = MappingLookupSearch(index_dir)
-        shard_info = self.ms.split_shards()
-        self.ms.load_shard(shard, shard_info["offset"], shard_info["length"])
+        # Check to see if we should exit
+        if req["artist_name"] == "" and req["release_name"] == "" and req["recording_name"] == "":
+            return
 
-    def run(self):
-
-        while True:
-            req = self.in_q.get()
-
-
+        out_q.put(ms.search(req))

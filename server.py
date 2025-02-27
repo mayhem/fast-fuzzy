@@ -4,18 +4,57 @@ from flask import Flask, request, jsonify
 from werkzeug.exceptions import BadRequest
 
 from search_index import MappingLookupSearch
+from search_process import mapping_lookup_process
+from fuzzy_index import FuzzyIndex
 
 
 INDEX_DIR = "index"
-NUM_SHARDS = 8
+NUM_SHARDS = 2
 
-request_queue = Queue()
-response_queue = Queue()
+def create_shard_processes(ms):
 
-ms = MappingLookupSearch(index_dir, NUM_SHARDS)
-ms.load_artist_index()
-shards = ms.create_shards()
+    print(ms.shards)
 
+    shards = []
+    shard_index = {}
+    for i in range(NUM_SHARDS):
+        request_queue = Queue()
+        response_queue = Queue()
+        p = Process(target=mapping_lookup_process, args=(request_queue, response_queue, INDEX_DIR, NUM_SHARDS, i))
+        p.start()
+        shards.append({ "process" : p, "in_q": request_queue, "out_q": response_queue })
+        for ch in ms.shards[i]["partition_initials"]:
+            shard_index[ch] = i
+
+    return shards, shard_index
+
+def stop_shard_processes(shards):
+
+    print("stop shard procs called")
+
+    # Send each worker a message to exit
+    request = { "exit": True }
+    for shard in shards:
+        shard["process"].in_q.put(request)
+
+    # Join each process and then join the queues
+    for shard in shards:
+        shard["process"].join()
+        shard["in_q"].join()
+        shard["out_q"].join()
+
+ms = MappingLookupSearch(INDEX_DIR, NUM_SHARDS)
+ms.split_shards()
+shards, shard_index = create_shard_processes(ms)
+
+artist_index = FuzzyIndex()
+artist_index.load(INDEX_DIR)
+
+class DelFlask(Flask):
+
+    def __del__(self):
+        print("in __del__!")
+        stop_shard_processes()
 
 app = Flask(__name__)
 
@@ -27,4 +66,17 @@ def index():
     if not artist or not recording:
         raise BadRequest("a and r must be given")
 
-    return jsonify(mi.search(artist, release, recording))
+    encoded = FuzzyIndex.encode_string(artist)
+    artist_ids = artist_index.search(artist)
+    req = { "artist_ids": [ x["index"] for x in artist_ids ],
+            "artist_name": artist,
+            "release_name": release,
+            "recording_name": recording }
+    shard = shard_index[encoded[0]]
+    print("enqueue request")
+    print(req)
+    shards[shard]["in_q"].put(req)
+    print("await response")
+    response = shards[shard]["out_q"].get()
+
+    return jsonify(response)
