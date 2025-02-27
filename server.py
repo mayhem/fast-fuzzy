@@ -1,21 +1,35 @@
+from multiprocessing import Process, Queue
+
 from flask import Flask, request, jsonify
 from werkzeug.exceptions import BadRequest
 
-from fuzzy_index import MappingLookupIndex
+from search_index import MappingLookupSearch
+
+
+INDEX_DIR = "index"
+NUM_SHARDS = 8
+
+request_queue = Queue()
+response_queue = Queue()
+
+ms = MappingLookupSearch(index_dir, NUM_SHARDS)
+ms.load_artist_index()
+shards = ms.create_shards()
+
 
 app = Flask(__name__)
-
-print("Load index")
-mi = MappingLookupIndex()
-mi.load("index")
-print("starting server")
 
 @app.route("/search")
 def index():
     global mi
-    artist = request.args.get("a", "")
-    recording = request.args.get("r", "")
+    artist = request.args.get("artist", "")
+    release = request.args.get("release", "")
+    recording = request.args.get("recording", "")
     if not artist or not recording:
         raise BadRequest("a and r must be given")
+
+    request = { "artist": artist, "release": release, "recording": recording }
+
+    ms.artist_index.search(aritst)
 
     return jsonify(mi.search(artist, recording))

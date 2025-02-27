@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 
 from bisect import bisect_left
-import fcntl
-import json
+from math import ceil
 from pickle import load
 from random import randint
 from time import monotonic, sleep
@@ -34,77 +33,52 @@ class MappingLookupSearch:
         self.relrec_release_indexes = {}
         self.relrec_recording_indexes = {}
 
-    def load_shard_details(self, shard_dir):
-
-        shard = randint(0, self.num_shards - 1)
-        done = False
-        while not done:
-            file_path = os.path.join(shard_dir, "shard_%03d.json" % shard)
-            with open(file_path, "rb+") as f:
-                try:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-                except OSError:
-                    shard = (shard + 1) % self.num_shards
-                    sleep(1)
-                    continue
-            
-                # Read the data
-                data = json.loads(f.read())
-
-                # Now truncate the file so another proc cant read it
-                f.seek(0)
-                f.truncate()
-                done = True
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-
-        os.unlink(file_path)
-        self.load_shard(shard, data["offset"], data["length"])
-
-        return self.shard
+    @staticmethod
+    def chunks(l, n):
+        d, r = divmod(len(l), n)
+        for i in range(n):
+            si = (d+1)*(i if i < r else r) + d*(0 if i < r else i - r)
+            yield l[si:si+(d+1 if i < r else d)]
 
     def determine_shards(self):
-        """ load the offsets table to determine how to shard this index, loads all relrec_offsets! """
+        """ determine how to break up shards """
 
-        t0 = monotonic()
-        self.relrec_offsets = []
-        r_file = os.path.join(self.index_dir, "relrec_offset_table.binary")
-        with open(r_file, "rb") as f:
-            while True:
-                row = f.read(12)
-                if not row:
+        most_letters = "bcdefghijklmnopqrstuvwxyz"
+        shard_initials = [ "0123456789a" ]
+        shard_initials.extend(self.chunks(most_letters, self.num_shards))
+
+        p_file = os.path.join(self.index_dir, "shard_offsets.pickle")
+        with open(p_file, "rb") as f:
+            partition_offsets = load(f)
+
+        total_size = partition_offsets[-1][1]
+        equal_chunk_size = total_size // self.num_shards
+
+        # Calculate lengths
+        for i in range(len(partition_offsets)-1):
+            partition_offsets[i].append((partition_offsets[i+1][1] - 1) - partition_offsets[i][1])
+        del partition_offsets[-1]
+
+
+        while True:
+            done = True
+            for i, part in enumerate(partition_offsets[:-1]):
+                other = partition_offsets[i+1]
+                if part[2] < equal_chunk_size:
+                    part[0] += other[0]
+                    part[2] += other[2]
+                    del partition_offsets[i+1]
+                    done = False
                     break
 
-                offset, length, id = struct.unpack("III", row)
-                self.relrec_offsets.append({ "offset": offset, 
-                                             "length": length,
-                                             "id": id })
-                print(self.relrec_offsets[-1])
-        t1 = monotonic()
-        print("loaded data in %.1f seconds." % (t1 - t0))
+            if done:
+                break
 
-        total = len(self.relrec_offsets)
-        recs_per_shard = total // self.num_shards
-
-        shards = []
-        for shard in range(self.num_shards):
-            relrec = self.relrec_offsets[shard * recs_per_shard]
-            next_relrec = self.relrec_offsets[(shard + 1) * recs_per_shard]
-            if shard < self.num_shards - 1:
-                length = next_relrec["offset"] - relrec["offset"]
-            else:
-                eof = self.relrec_offsets[-1]["offset"] + self.relrec_offsets[-1]["length"]
-                length = eof - relrec["offset"]
-            print("shard %d off: %12d id: %12d len: %12d" % (shard, relrec["offset"], relrec["id"], length))
-            shards.append({ "offset": relrec["offset"], "id": relrec["id"], "length": relrec["length"] })
-
-        return shards
+        return [ { "partition_initials": p[0], "offset": p[1], "length": p[2] } for p in partition_offsets ]
 
 
     def load_shard(self, shard, offset, length):
         """ load/init the data needed to operate the shard, loads relrecs_offsets for this shard! """
-
-#        offset = self.shards[shard]["offset"]
-#        length = self.shards[shard]["length"]
 
         r_file = os.path.join(self.index_dir, "relrec_offset_table.binary")
         with open(r_file, "rb") as f:
@@ -131,6 +105,24 @@ class MappingLookupSearch:
     def load_artist_index(self):
         self.artist_index = FuzzyIndex()
         self.artist_index.load(self.index_dir)
+
+    def load_relrecs_offsets(self):
+        t0 = monotonic()
+        self.relrec_offsets = []
+        r_file = os.path.join(self.index_dir, "relrec_offset_table.binary")
+        with open(r_file, "rb") as f:
+            while True:
+                row = f.read(12)
+                if not row:
+                    break
+
+                offset, length, id = struct.unpack("III", row)
+                self.relrec_offsets.append({ "offset": offset, 
+                                             "length": length,
+                                             "id": id })
+                print(self.relrec_offsets[-1])
+        t1 = monotonic()
+        print("loaded data in %.1f seconds." % (t1 - t0))
 
     def load_relrecs_for_artist(self, artist_credit_id):
         """ Load one artist's release and recordings data from disk. Correct relrec_offsets chunk must be loaded. """
@@ -189,6 +181,7 @@ class MappingLookupSearch:
 
 
 if __name__ == "__main__":
-    s = MappingLookupSearch("small_index", 8)
-    s.load_shard(0, 0, 16416303)
-    s.load_relrecs_for_artist(65)
+    s = MappingLookupSearch("index", 8)
+    s.determine_shards()
+#    s.load_shard(0, 0, 16416303)
+#    s.load_relrecs_for_artist(65)
