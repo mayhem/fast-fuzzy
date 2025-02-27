@@ -21,15 +21,10 @@ app = Flask(__name__)
 
 @app.route("/search")
 def index():
-    global mi
     artist = request.args.get("artist", "")
     release = request.args.get("release", "")
     recording = request.args.get("recording", "")
     if not artist or not recording:
         raise BadRequest("a and r must be given")
 
-    request = { "artist": artist, "release": release, "recording": recording }
-
-    ms.artist_index.search(aritst)
-
-    return jsonify(mi.search(artist, recording))
+    return jsonify(mi.search(artist, release, recording))

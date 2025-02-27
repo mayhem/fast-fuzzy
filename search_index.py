@@ -40,7 +40,7 @@ class MappingLookupSearch:
             si = (d+1)*(i if i < r else r) + d*(0 if i < r else i - r)
             yield l[si:si+(d+1 if i < r else d)]
 
-    def determine_shards(self):
+    def split_shards(self):
         """ determine how to break up shards """
 
         most_letters = "bcdefghijklmnopqrstuvwxyz"
@@ -157,6 +157,8 @@ class MappingLookupSearch:
         release_name = FuzzyIndex.encode_string(release_name)
 
         artists = self.artist_index.search(artist_name)
+
+        request = { "artist": artist, "release": release, "recording": recording }
         results = []
 
         # TODO: Add release searching, detuning, etc
@@ -182,6 +184,6 @@ class MappingLookupSearch:
 
 if __name__ == "__main__":
     s = MappingLookupSearch("index", 8)
-    s.determine_shards()
+    s.split_shards()
 #    s.load_shard(0, 0, 16416303)
 #    s.load_relrecs_for_artist(65)

@@ -12,7 +12,7 @@ from psycopg2.extras import DictCursor, execute_values
 from utils import IndexDataPickleList
 from fuzzy_index import FuzzyIndex
 
-# TODO: Remove _ from the combined filed of canonical data dump
+# TODO: Remove _ from the combined field of canonical data dump. Done, but make PR
 
 # For wolf
 DB_CONNECT = "dbname=musicbrainz_db user=musicbrainz host=localhost port=5432 password=musicbrainz"
