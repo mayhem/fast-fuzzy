@@ -120,8 +120,6 @@ class MappingLookupIndex:
 
                 shard_offsets.append([None, relrec_f.tell()])
 
-        print(shard_offsets)
-
         print("Write relrec offsets table")
         r_file = os.path.join(index_dir, "relrec_offset_table.binary")
         with open(r_file, "wb") as f:

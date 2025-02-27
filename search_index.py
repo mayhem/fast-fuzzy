@@ -124,7 +124,6 @@ class MappingLookupSearch:
                 self.relrec_offsets.append({ "offset": offset, 
                                              "length": length,
                                              "id": id })
-                print(self.relrec_offsets[-1])
         t1 = monotonic()
         print("loaded data in %.1f seconds." % (t1 - t0))
 
