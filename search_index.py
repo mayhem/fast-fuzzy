@@ -12,6 +12,9 @@ import sys
 
 from fuzzy_index import FuzzyIndex
 
+RELEASE_CONFIDENCE = .5
+RECORDING_CONFIDENCE = .5
+
 def bsearch(alist, item):
     i = bisect_left(alist, item)
     if i != len(alist) and alist[i] == item:
@@ -48,9 +51,12 @@ class MappingLookupSearch:
         with open(p_file, "rb") as f:
             partition_table = load(f)
 
+        print("load!")
+        for i, shard in enumerate(partition_table):
+            print("%d %12s %12s %s" % (i, f'{shard["offset"]:,}', f'{shard["length"]:,}', shard["shard_ch"]))
+        print()
+
         equal_chunk_size = (partition_table[-1]["offset"] + partition_table[-1]["length"]) // self.num_shards
-        for p in partition_table:
-            print(p)
 
         # This is a very pathetic attempt at sharding. This needs real life input to be improved
         while True:
@@ -64,17 +70,21 @@ class MappingLookupSearch:
                     done = False
                     break
 
+            for i, shard in enumerate(partition_table):
+                print("%d %12s %12s %s" % (i, f'{shard["offset"]:,}', f'{shard["length"]:,}', shard["shard_ch"]))
+            print()
+
             if done or len(partition_table) == self.num_shards:
                 break
 
         self.shards = partition_table
-        for i, shard in enumerate(self.shards):
-            print("%d %12d %12d %s" % (i, shard["offset"], shard["length"], shard["shard_ch"]))
+        print("done!")
 
 
     def load_shard(self, shard):
         """ load/init the data needed to operate the shard, loads relrecs_offsets for this shard! """
 
+        print("in load shard")
         if self.shards is None:
             self.split_shards()
 
@@ -86,6 +96,8 @@ class MappingLookupSearch:
         with open(r_file, "rb") as f:
             f.seek(offset)
             data = f.read(length)
+
+        print("read %d bytes from %d" % (len(data), offset))
 
         d_offset = 0
         self.relrec_offsets = []
@@ -100,30 +112,20 @@ class MappingLookupSearch:
                                          "id": id })
             d_offset += 12
 
+        print("%d rows in offsets" % len(self.relrec_offsets))
 
-
-    def load_relrecs_offsets(self):
-        t0 = monotonic()
-        self.relrec_offsets = []
-        r_file = os.path.join(self.index_dir, "relrec_offset_table.binary")
-        with open(r_file, "rb") as f:
-            while True:
-                row = f.read(12)
-                if not row:
-                    break
-
-                offset, length, id = struct.unpack("III", row)
-                self.relrec_offsets.append({ "offset": offset, 
-                                             "length": length,
-                                             "id": id })
-        t1 = monotonic()
-        print("loaded data in %.1f seconds." % (t1 - t0))
 
     def load_relrecs_for_artist(self, artist_credit_id):
         """ Load one artist's release and recordings data from disk. Correct relrec_offsets chunk must be loaded. """
 
+        # Have we loaded this already? If so, bail!
+        if artist_credit_id in self.relrec_release_indexes:
+            print("aready have artist")
+            return
+
         if self._relrec_ids is None:
             self._relrec_ids = [ x["id"] for x in self.relrec_offsets ]
+#        print(self._relrec_ids)
         offset = bsearch(self._relrec_ids, artist_credit_id)
         if offset < 0:
             print("artist not found")
@@ -154,27 +156,17 @@ class MappingLookupSearch:
         recording_name = FuzzyIndex.encode_string(req["recording_name"])
         release_name = FuzzyIndex.encode_string(req["release_name"])
 
-        # Implement the actual search here. lol
-
-        return { "poot": True }
-
-        # TODO: Add release searching, detuning, etc
-        # For each hit, search recordings.
-        for artist in artists:
-            if artist["confidence"] > ARTIST_CONFIDENCE_THRESHOLD:
-
-                # Fetch the index for the recordings -- if not built yet, build it!
-                if artist["id"] not in self.relrec_recording_indexes:
-                    load_relrecs_for_artist(artist["id"])
-
-                rec_results = self.relrec_recording_indexes[artist["id"]].search(recording_name)
-                for result in rec_results:
-                    results.append({ "artist_name": artist["text"],
-                                     "artist_mbids": artist["artist_mbids"],
-                                     "artist_confidence": artist["confidence"],
-                                     "recording_name": result["recording_name"],
-                                     "recording_mbid": result["recording_mbid"],
-                                     "recording_confidence": result["confidence"] })
+        results = []
+        for artist_id in artist_ids:
+            self.load_relrecs_for_artist(artist_id)
+            rec_index = self.relrec_recording_indexes[artist_id]
+            rec_results = rec_index.search(recording_name, min_confidence=RECORDING_CONFIDENCE)
+            for result in rec_results:
+                results.append({ "artist_name": artist_name, 
+                                 "artist_credit_id": artist_id,
+                                 "recording_name": recording_name,
+                                 "recording_id": result["index"],
+                                 "recording_confidence": result["confidence"] })
 
         return results
 

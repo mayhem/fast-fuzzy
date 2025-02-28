@@ -152,9 +152,9 @@ class MappingLookupIndex:
             shard_table.append({ "shard_ch": shard_off, "offset": shard_offsets[shard_off], "length": None })
         for i, entry in enumerate(shard_table):
             try:
-                entry["length"] = (shard_table[i+1]["offset"] - 1) - shard_table[i]["offset"]
+                entry["length"] = shard_table[i+1]["offset"] - shard_table[i]["offset"]
             except IndexError:
-                entry["length"] = (relrec_offset - 1) - shard_table[i]["offset"]
+                entry["length"] = relrec_offset - shard_table[i]["offset"]
 
         s_file = os.path.join(index_dir, "shard_table.pickle")
         with open(s_file, "wb") as f:
@@ -170,6 +170,17 @@ class MappingLookupIndex:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: mapping_index.py <index dir>")
+        sys.exit(-1)
+
+    index_dir = sys.argv[1]
+
     mi = MappingLookupIndex()
     with psycopg2.connect(DB_CONNECT) as conn:
-        mi.create(conn, "small_index")
+        try:
+            os.makedirs(index_dir)
+        except OSError:
+            pass
+
+        mi.create(conn, index_dir)
