@@ -120,6 +120,9 @@ class MappingLookupIndex:
             for artist in sorted_artist_data:
                 p_release_data = dumps(artist[1]["release_data"])
                 p_recording_data = dumps(artist[1]["recording_data"])
+                del artist[1]["release_data"]
+                del artist[1]["recording_data"]
+
                 relrec_data_size = len(p_release_data) + len(p_recording_data)
                 relrec_offsets.append({ "id": artist[1]["index"],
                                         "offset": relrec_offset,

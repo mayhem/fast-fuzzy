@@ -64,22 +64,19 @@ class FuzzyIndex:
         with open(d_file, "rb") as f:
             self.index_data = pickle.load(f)
 
-    def search(self, query_string):
+    def search(self, query_string, min_confidence):
         if self.index is None:
             raise IndexError("Must build index before searching")
 
         query_matrix = self.vectorizer.transform([query_string])
         # TOTUNE: k might need tuning
         results = self.index.knnQueryBatch(query_matrix, k=15, num_threads=5)
-        from icecream import ic
-        ic(results)
-
         output = []
         for i, conf in zip(results[0][0], results[0][1]):
             data = self.index_data[i]
-            data["confidence"] = fabs(conf)
-            output.append(data)
-
-        ic(output)
+            confidence = fabs(conf)
+            if confidence >= min_confidence:
+                data["confidence"] = fabs(conf)
+                output.append(data)
 
         return output
