@@ -44,40 +44,32 @@ class MappingLookupSearch:
     def split_shards(self):
         """ determine how to break up shards """
 
-        most_letters = "bcdefghijklmnopqrstuvwxyz"
-        shard_initials = [ "0123456789a" ]
-        shard_initials.extend(self.chunks(most_letters, self.num_shards))
-
-        p_file = os.path.join(self.index_dir, "shard_offsets.pickle")
+        p_file = os.path.join(self.index_dir, "shard_table.pickle")
         with open(p_file, "rb") as f:
-            partition_offsets = load(f)
+            partition_table = load(f)
 
-        total_size = partition_offsets[-1][1]
-        equal_chunk_size = total_size // self.num_shards
-
-        # Calculate lengths
-        for i in range(len(partition_offsets)-1):
-            partition_offsets[i].append((partition_offsets[i+1][1] - 1) - partition_offsets[i][1])
-        del partition_offsets[-1]
+        equal_chunk_size = (partition_table[-1]["offset"] + partition_table[-1]["length"]) // self.num_shards
+        for p in partition_table:
+            print(p)
 
         # This is a very pathetic attempt at sharding. This needs real life input to be improved
         while True:
             done = True
-            for i, part in enumerate(partition_offsets[:-1]):
-                other = partition_offsets[i+1]
-                if part[2] < equal_chunk_size:
-                    part[0] += other[0]
-                    part[2] += other[2]
-                    del partition_offsets[i+1]
+            for i, part in enumerate(partition_table[:-1]):
+                next_row = partition_table[i+1]
+                if part["length"] < equal_chunk_size:
+                    part["shard_ch"] += next_row["shard_ch"]
+                    part["length"] += next_row["length"]
+                    del partition_table[i+1]
                     done = False
                     break
 
-            if done or len(partition_offsets) == self.num_shards:
+            if done or len(partition_table) == self.num_shards:
                 break
 
-        self.shards = [ { "partition_initials": p[0], "offset": p[1], "length": p[2] } for p in partition_offsets ]
+        self.shards = partition_table
         for i, shard in enumerate(self.shards):
-            print("%d %12d %12d %s" % (i, shard["offset"], shard["length"], shard["partition_initials"]))
+            print("%d %12d %12d %s" % (i, shard["offset"], shard["length"], shard["shard_ch"]))
 
 
     def load_shard(self, shard):
@@ -154,6 +146,8 @@ class MappingLookupSearch:
         self.relrec_recording_indexes[artist_credit_id] = recording_index
 
     def search(self, req):
+
+        print(req)
 
         artist_ids = req["artist_ids"]
         artist_name = FuzzyIndex.encode_string(req["artist_name"])

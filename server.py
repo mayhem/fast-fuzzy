@@ -9,7 +9,7 @@ from search_process import mapping_lookup_process
 from fuzzy_index import FuzzyIndex
 
 
-INDEX_DIR = "index"
+INDEX_DIR = "small_index"
 NUM_SHARDS = 2
 
 def create_shard_processes(ms):
@@ -22,7 +22,7 @@ def create_shard_processes(ms):
         p = Process(target=mapping_lookup_process, args=(request_queue, response_queue, INDEX_DIR, NUM_SHARDS, i))
         p.start()
         shards.append({ "process" : p, "in_q": request_queue, "out_q": response_queue })
-        for ch in ms.shards[i]["partition_initials"]:
+        for ch in ms.shards[i]["shard_ch"]:
             shard_index[ch] = i
 
     return shards, shard_index
@@ -65,8 +65,8 @@ def index():
         raise BadRequest("a and r must be given")
 
     encoded = FuzzyIndex.encode_string(artist)
-    artist_ids = artist_index.search(artist)
-    req = { "artist_ids": [ x["index"] for x in artist_ids ],
+    artists = artist_index.search(artist)
+    req = { "artist_ids": [ x["index"] for x in artists ],
             "artist_name": artist,
             "release_name": release,
             "recording_name": recording }
