@@ -9,7 +9,7 @@ from search_process import mapping_lookup_process
 from fuzzy_index import FuzzyIndex
 
 
-INDEX_DIR = "small_index"
+INDEX_DIR = "index"
 NUM_SHARDS = 2
 ARTIST_CONFIDENCE = .5
 
@@ -59,11 +59,11 @@ atexit.register(cleanup)
 
 @app.route("/search")
 def index():
-    artist = request.args.get("artist", "")
-    release = request.args.get("release", "")
-    recording = request.args.get("recording", "")
+    artist = request.args.get("a", "")
+    release = request.args.get("rl", "")
+    recording = request.args.get("rc", "")
     if not artist or not recording:
-        raise BadRequest("a and r must be given")
+        raise BadRequest("a and rc must be given")
 
     encoded = FuzzyIndex.encode_string(artist)
     artists = artist_index.search(artist, min_confidence=ARTIST_CONFIDENCE)

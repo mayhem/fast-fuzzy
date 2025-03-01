@@ -58,8 +58,8 @@ class MappingLookupIndex:
                                  ON rec.gid = recording_mbid
                                JOIN release rel
                                  ON rel.gid = release_mbid
-                              WHERE artist_credit_id < 10000
                            ORDER BY artist_credit_id""")
+#                              WHERE artist_credit_id < 10000
 
             print("load data")
             shard_offsets = {}
@@ -75,9 +75,12 @@ class MappingLookupIndex:
                     if last_row is not None and row["artist_credit_id"] != last_row["artist_credit_id"]:
                         # Save artist data for artist index
                         encoded = FuzzyIndex.encode_string(last_row["artist_credit_name"])
+                        if not encoded:
+                            continue
+
                         artist_data.append({ "text": encoded,
                                              "index": last_row["artist_credit_id"] })
-            
+           
                         if encoded[0] not in shard_offsets:
                             shard_offsets[encoded[0]] = len(relrec_offsets) * 13 
 

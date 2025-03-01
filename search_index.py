@@ -129,7 +129,6 @@ class MappingLookupSearch:
 
         if self._relrec_ids is None:
             self._relrec_ids = [ x["id"] for x in self.relrec_offsets ]
-#        print(self._relrec_ids)
         offset = bsearch(self._relrec_ids, artist_credit_id)
         if offset < 0:
             print("artist not found")
@@ -153,8 +152,6 @@ class MappingLookupSearch:
 
     def search(self, req):
 
-        print(req)
-
         artist_ids = req["artist_ids"]
         artist_name = FuzzyIndex.encode_string(req["artist_name"])
         recording_name = FuzzyIndex.encode_string(req["recording_name"])
@@ -166,7 +163,6 @@ class MappingLookupSearch:
             rec_index = self.relrec_recording_indexes[artist_id]
             rec_results = rec_index.search(recording_name, min_confidence=RECORDING_CONFIDENCE)
             for result in rec_results:
-                print(result)
                 results.append({ "artist_name": artist_name, 
                                  "artist_credit_id": artist_id,
                                  "recording_name": recording_name,
@@ -177,8 +173,9 @@ class MappingLookupSearch:
 
 
 if __name__ == "__main__":
-    s = MappingLookupSearch("small_index", 8)
+    from tabulate import tabulate
+    s = MappingLookupSearch("index", 8)
     s.split_shards()
     s.load_shard(4)
     results = s.search({ "artist_ids": [65], "artist_name": "portishead", "release_name": "dummy", "recording_name": "strangers" })
-    print(results)
+    print(tabulate(results))
