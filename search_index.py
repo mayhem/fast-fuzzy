@@ -51,12 +51,13 @@ class MappingLookupSearch:
         with open(p_file, "rb") as f:
             partition_table = load(f)
 
-        print("load!")
+        equal_chunk_size = partition_table[-1]["length"] // self.num_shards
+        partition_table.pop(-1)
+
+        print("Loaded partition table")
         for i, shard in enumerate(partition_table):
             print("%d %12s %12s %s" % (i, f'{shard["offset"]:,}', f'{shard["length"]:,}', shard["shard_ch"]))
         print()
-
-        equal_chunk_size = (partition_table[-1]["offset"] + partition_table[-1]["length"]) // self.num_shards
 
         # This is a very pathetic attempt at sharding. This needs real life input to be improved
         while True:
@@ -70,12 +71,14 @@ class MappingLookupSearch:
                     done = False
                     break
 
-            for i, shard in enumerate(partition_table):
-                print("%d %12s %12s %s" % (i, f'{shard["offset"]:,}', f'{shard["length"]:,}', shard["shard_ch"]))
-            print()
 
             if done or len(partition_table) == self.num_shards:
                 break
+
+        print(f"Collapsed partition table ({equal_chunk_size:,} target partition size)")
+        for i, shard in enumerate(partition_table):
+            print("%d %12s %12s %s" % (i, f'{shard["offset"]:,}', f'{shard["length"]:,}', shard["shard_ch"]))
+        print()
 
         self.shards = partition_table
         print("done!")
@@ -103,14 +106,15 @@ class MappingLookupSearch:
         self.relrec_offsets = []
         while True:
             try:
-                offset, length, id = struct.unpack("III", data[d_offset:d_offset+12])
+                offset, length, id, part_ch = struct.unpack("IIIc", data[d_offset:d_offset+13])
             except struct.error:
                 break
 
             self.relrec_offsets.append({ "offset": offset, 
                                          "length": length,
-                                         "id": id })
-            d_offset += 12
+                                         "id": id,
+                                         "part_ch": part_ch})
+            d_offset += 13
 
         print("%d rows in offsets" % len(self.relrec_offsets))
 
@@ -162,18 +166,19 @@ class MappingLookupSearch:
             rec_index = self.relrec_recording_indexes[artist_id]
             rec_results = rec_index.search(recording_name, min_confidence=RECORDING_CONFIDENCE)
             for result in rec_results:
+                print(result)
                 results.append({ "artist_name": artist_name, 
                                  "artist_credit_id": artist_id,
                                  "recording_name": recording_name,
-                                 "recording_id": result["index"],
+                                 "recording_id": result["id"],
                                  "recording_confidence": result["confidence"] })
 
         return results
 
 
 if __name__ == "__main__":
-    s = MappingLookupSearch("index", 8)
+    s = MappingLookupSearch("small_index", 8)
     s.split_shards()
-    s.load_shard(0)
-    results = s.search([65], "portishead", "dummy", "strangers")
+    s.load_shard(4)
+    results = s.search({ "artist_ids": [65], "artist_name": "portishead", "release_name": "dummy", "recording_name": "strangers" })
     print(results)
