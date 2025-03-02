@@ -9,7 +9,7 @@ from search_process import mapping_lookup_process
 from fuzzy_index import FuzzyIndex
 
 
-INDEX_DIR = "index"
+INDEX_DIR = "small_index"
 NUM_SHARDS = 2
 ARTIST_CONFIDENCE = .5
 

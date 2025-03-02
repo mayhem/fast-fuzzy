@@ -11,6 +11,8 @@ import os
 import sys
 
 from fuzzy_index import FuzzyIndex
+from shard_histogram import shard_histogram
+from utils import split_dict_evenly
 
 RELEASE_CONFIDENCE = .5
 RECORDING_CONFIDENCE = .5
@@ -51,43 +53,45 @@ class MappingLookupSearch:
         with open(p_file, "rb") as f:
             partition_table = load(f)
 
-        equal_chunk_size = partition_table[-1]["length"] // self.num_shards
-        partition_table.pop(-1)
+#        print("Loaded partition table")
+#        for i, shard in enumerate(partition_table):
+#            print("%d %12s %12s %s" % (i, f'{shard["offset"]:,}', f'{shard["length"]:,}', shard["shard_ch"]))
+#        print()
 
-        print("Loaded partition table")
-        for i, shard in enumerate(partition_table):
+        # Split the dict based on an even distribution of the value's sums
+        split_hist = split_dict_evenly(shard_histogram, self.num_shards)
+
+        # Lookup which partition each element should be in
+        shards = [ [] for i in range(self.num_shards) ]
+        for partition in partition_table:
+            for shard, shard_chars in enumerate(split_hist):
+                if partition["shard_ch"] in shard_chars:
+                    shards[shard].append((partition["offset"], partition["length"], partition["shard_ch"]))
+
+        # sort to combine all the rows in one shard into a single row
+        self.shards = []
+        for shard in shards:
+            length = 0
+            chars = ""
+            offset = None
+            for row in shard:
+                if offset is None:
+                    offset = row[0]
+                length += row[1]
+                chars += row[2]
+            self.shards.append({ "offset": offset, "length": length, "shard_ch": chars })
+
+        print(f"partition table")
+        for i, shard in enumerate(self.shards):
             print("%d %12s %12s %s" % (i, f'{shard["offset"]:,}', f'{shard["length"]:,}', shard["shard_ch"]))
         print()
-
-        # This is a very pathetic attempt at sharding. This needs real life input to be improved
-        while True:
-            done = True
-            for i, part in enumerate(partition_table[:-1]):
-                next_row = partition_table[i+1]
-                if part["length"] < equal_chunk_size:
-                    part["shard_ch"] += next_row["shard_ch"]
-                    part["length"] += next_row["length"]
-                    del partition_table[i+1]
-                    done = False
-                    break
-
-
-            if done or len(partition_table) == self.num_shards:
-                break
-
-        print(f"Collapsed partition table ({equal_chunk_size:,} target partition size)")
-        for i, shard in enumerate(partition_table):
-            print("%d %12s %12s %s" % (i, f'{shard["offset"]:,}', f'{shard["length"]:,}', shard["shard_ch"]))
-        print()
-
-        self.shards = partition_table
-        print("done!")
 
 
     def load_shard(self, shard):
         """ load/init the data needed to operate the shard, loads relrecs_offsets for this shard! """
 
-        print("in load shard")
+        print("load shard: %d" % shard)
+
         if self.shards is None:
             self.split_shards()
 
@@ -99,8 +103,6 @@ class MappingLookupSearch:
         with open(r_file, "rb") as f:
             f.seek(offset)
             data = f.read(length)
-
-        print("read %d bytes from %d" % (len(data), offset))
 
         d_offset = 0
         self.relrec_offsets = []
@@ -116,7 +118,7 @@ class MappingLookupSearch:
                                          "part_ch": part_ch})
             d_offset += 13
 
-        print("%d rows in offsets" % len(self.relrec_offsets))
+        self.relrec_offsets = sorted(self.relrec_offsets, key=lambda x: x["id"])
 
 
     def load_relrecs_for_artist(self, artist_credit_id):
@@ -129,6 +131,7 @@ class MappingLookupSearch:
 
         if self._relrec_ids is None:
             self._relrec_ids = [ x["id"] for x in self.relrec_offsets ]
+            print(self._relrec_ids)
         offset = bsearch(self._relrec_ids, artist_credit_id)
         if offset < 0:
             print("artist not found")
@@ -153,6 +156,7 @@ class MappingLookupSearch:
     def search(self, req):
 
         artist_ids = req["artist_ids"]
+        print("artist ids", artist_ids)
         artist_name = FuzzyIndex.encode_string(req["artist_name"])
         recording_name = FuzzyIndex.encode_string(req["recording_name"])
         release_name = FuzzyIndex.encode_string(req["release_name"])
@@ -174,8 +178,9 @@ class MappingLookupSearch:
 
 if __name__ == "__main__":
     from tabulate import tabulate
-    s = MappingLookupSearch("index", 8)
+    s = MappingLookupSearch("small_index", 2)
     s.split_shards()
-    s.load_shard(4)
+    s.load_shard(1)
     results = s.search({ "artist_ids": [65], "artist_name": "portishead", "release_name": "dummy", "recording_name": "strangers" })
+    results = s.search({ "artist_ids": [963], "artist_name": "morecheeba", "release_name": "who can you tryst", "recording_name": "trigger hippie" })
     print(tabulate(results))

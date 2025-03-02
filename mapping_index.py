@@ -9,7 +9,6 @@ import sys
 import psycopg2
 from psycopg2.extras import DictCursor, execute_values
 
-from utils import IndexDataPickleList
 from fuzzy_index import FuzzyIndex
 
 # TODO: Remove _ from the combined field of canonical data dump. Done, but make PR
@@ -58,11 +57,10 @@ class MappingLookupIndex:
                                  ON rec.gid = recording_mbid
                                JOIN release rel
                                  ON rel.gid = release_mbid
+                              WHERE artist_credit_id < 10000
                            ORDER BY artist_credit_id""")
-#                              WHERE artist_credit_id < 10000
 
             print("load data")
-            shard_offsets = {}
             index_file = os.path.join(index_dir, "relrec_data.pickle")
             with open(index_file, "wb") as relrec_f:
                 for i, row in enumerate(curs):
@@ -81,8 +79,6 @@ class MappingLookupIndex:
                         artist_data.append({ "text": encoded,
                                              "index": last_row["artist_credit_id"] })
            
-                        if encoded[0] not in shard_offsets:
-                            shard_offsets[encoded[0]] = len(relrec_offsets) * 13 
 
                         # Remove duplicate release/id entries
                         release_data = [dict(t) for t in {tuple(d.items()) for d in release_data}]
@@ -121,9 +117,6 @@ class MappingLookupIndex:
                 p_release_data = dumps(release_data)
                 p_recording_data = dumps(recording_data)
 
-                if encoded[0] not in shard_offsets:
-                    shard_offsets[encoded[0]] = len(relrec_offsets) * 13 
-
                 relrec_data_size = len(p_release_data) + len(p_recording_data)
                 relrec_offsets.append({ "id": row["artist_credit_id"],
                                         "offset": relrec_offset,
@@ -137,41 +130,26 @@ class MappingLookupIndex:
                 release_data = []
 
 
+        # Sort the relrecs in unidecode space
+        relrec_sorted = sorted(relrec_offsets, key=lambda x: (x["part_ch"], x["id"]))
 
-        # (encoded_artist_name, artist)
-        artist_sort_data = []
-        for artist in artist_data:
-            artist_sort_data.append([artist["text"], artist])
-
-        # Re-sort the data into unidecode space
-        sorted_artist_data = sorted(artist_sort_data, key=lambda x: (x[0], x[1]["index"]))
-        # Cleanup large chunk of data now
-        del artist_sort_data
-
-        # Finish off the shard_offsets
         print("Write relrec offsets table")
         r_file = os.path.join(index_dir, "relrec_offset_table.binary")
         with open(r_file, "wb") as f:
-            for relrec in relrec_offsets:
+            for relrec in relrec_sorted:
                 f.write(pack("IIIc", relrec["offset"], relrec["length"], relrec["id"], bytes(relrec["part_ch"], "utf-8")))
-            relrec_offsets_size = f.tell()
 
         print("Write shard offsets table")
-        shard_table = []
-        for shard_off in shard_offsets:
-            shard_table.append({ "shard_ch": shard_off, "offset": shard_offsets[shard_off], "length": None })
+        shard_offsets = {}
+        relrec_offsets = sorted(relrec_offsets, key=lambda x: (x["part_ch"], x["offset"]))
+        for r_index, r_offset in enumerate(relrec_offsets):
+            relrec_offset = r_index * 13
+            if r_offset["part_ch"] not in shard_offsets:
+                shard_offsets[r_offset["part_ch"]] = {"shard_ch":r_offset["part_ch"], "offset": relrec_offset, "length": 13}
+            else:
+                shard_offsets[r_offset["part_ch"]]["length"] += 13
 
-
-        for i, entry in enumerate(shard_table):
-            try:
-                entry["length"] = shard_table[i+1]["offset"] - shard_table[i]["offset"]
-            except IndexError:
-                entry["length"] = relrec_offsets_size - shard_table[i]["offset"]
-
-        shard_table = sorted(shard_table, key=lambda x: x["shard_ch"])
-        # Write out a simple sentinel telling us how big the table is
-        shard_table.append({ None: shard_off, "offset": 0, "length": relrec_offsets_size, "shard_ch": None })
-
+        shard_table = sorted(shard_offsets.values(), key=lambda x: (x["shard_ch"], x["offset"]))
         for i, s in enumerate(shard_table):
             print(f"{i}: {s['offset']:<12,} {s['length']:<12,} {s['shard_ch']}")
 
