@@ -53,10 +53,13 @@ class MappingLookupSearch:
         with open(p_file, "rb") as f:
             partition_table = load(f)
 
-#        print("Loaded partition table")
-#        for i, shard in enumerate(partition_table):
-#            print("%d %12s %12s %s" % (i, f'{shard["offset"]:,}', f'{shard["length"]:,}', shard["shard_ch"]))
-#        print()
+        print("Loaded partition table")
+        for i, shard in enumerate(partition_table):
+            print("%d %12s %12s %s" % (i, f'{shard["offset"]:,}', f'{shard["length"]:,}', shard["shard_ch"]))
+        print()
+
+        self.shards = partition_table
+        return
 
         # Split the dict based on an even distribution of the value's sums
         split_hist = split_dict_evenly(shard_histogram, self.num_shards)
@@ -87,38 +90,16 @@ class MappingLookupSearch:
 #        print()
 
 
-    def load_shard(self, shard):
-        """ load/init the data needed to operate the shard, loads relrecs_offsets for this shard! """
-
-        print("load shard: %d" % shard)
+    def load_shard(self):
+        """ load/init the data needed to operate loads relrecs_offsets! """
 
         if self.shards is None:
             self.split_shards()
 
-        offset = self.shards[shard]["offset"]
-        length = self.shards[shard]["length"]
-        self.shard = shard
-
-        r_file = os.path.join(self.index_dir, "relrec_offset_table.binary")
+        r_file = os.path.join(self.index_dir, "relrec_offset_table.pickle")
         with open(r_file, "rb") as f:
-            f.seek(offset)
-            data = f.read(length)
-
-        d_offset = 0
-        self.relrec_offsets = []
-        while True:
-            try:
-                offset, length, id, part_ch = struct.unpack("IIIc", data[d_offset:d_offset+13])
-            except struct.error:
-                break
-
-            self.relrec_offsets.append({ "offset": offset, 
-                                         "length": length,
-                                         "id": id,
-                                         "part_ch": part_ch})
-            d_offset += 13
-
-        self.relrec_offsets = sorted(self.relrec_offsets, key=lambda x: x["id"])
+            relrec_offsets = load(f)
+        self.relrec_offsets = sorted(relrec_offsets, key=lambda x: x["id"])
 
 
     def load_relrecs_for_artist(self, artist_credit_id):
@@ -187,7 +168,7 @@ if __name__ == "__main__":
     from tabulate import tabulate
     s = MappingLookupSearch("small_index", 2)
     s.split_shards()
-    s.load_shard(1)
+    s.load_shard()
     results = s.search({ "artist_ids": [65], "artist_name": "portishead", "release_name": "dummy", "recording_name": "strangers" })
     results = s.search({ "artist_ids": [963], "artist_name": "morecheeba", "release_name": "who can you tryst", "recording_name": "trigger hippie" })
     print(tabulate(results))

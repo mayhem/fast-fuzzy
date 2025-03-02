@@ -134,10 +134,9 @@ class MappingLookupIndex:
         relrec_sorted = sorted(relrec_offsets, key=lambda x: (x["part_ch"], x["id"]))
 
         print("Write relrec offsets table")
-        r_file = os.path.join(index_dir, "relrec_offset_table.binary")
+        r_file = os.path.join(index_dir, "relrec_offset_table.pickle")
         with open(r_file, "wb") as f:
-            for relrec in relrec_sorted:
-                f.write(pack("IIIc", relrec["offset"], relrec["length"], relrec["id"], bytes(relrec["part_ch"], "utf-8")))
+            dump(relrec_sorted, f)
 
         print("Write shard offsets table")
         shard_offsets = {}

@@ -1,3 +1,4 @@
+from random import randint 
 import atexit
 from multiprocessing import Process, Queue
 
@@ -68,15 +69,18 @@ def index():
 
     encoded = FuzzyIndex.encode_string(artist)
     artists = artist_index.search(artist, min_confidence=ARTIST_CONFIDENCE)
+    for a in artists:
+        print("artist:", a)
     req = { "artist_ids": [ x["index"] for x in artists ],
             "artist_name": artist,
             "release_name": release,
             "recording_name": recording }
-    try:
-        shard = shard_index[encoded[0]]
-    except KeyError:
-        raise BadRequest("Shard not availble for char '%s'" % encoded)
+#    try:
+#        shard = shard_index[encoded[0]]
+#    except KeyError:
+#        raise BadRequest("Shard not availble for char '%s'" % encoded)
 
+    shard = randint(0, NUM_SHARDS-1)
     shards[shard]["in_q"].put(req)
     response = shards[shard]["out_q"].get()
 
