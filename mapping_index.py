@@ -57,8 +57,8 @@ class MappingLookupIndex:
                                  ON rec.gid = recording_mbid
                                JOIN release rel
                                  ON rel.gid = release_mbid
-                              WHERE artist_credit_id < 10000
                            ORDER BY artist_credit_id""")
+#                              WHERE artist_credit_id < 10000
 
             print("load data")
             index_file = os.path.join(index_dir, "relrec_data.pickle")

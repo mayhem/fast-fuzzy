@@ -81,10 +81,10 @@ class MappingLookupSearch:
                 chars += row[2]
             self.shards.append({ "offset": offset, "length": length, "shard_ch": chars })
 
-        print(f"partition table")
-        for i, shard in enumerate(self.shards):
-            print("%d %12s %12s %s" % (i, f'{shard["offset"]:,}', f'{shard["length"]:,}', shard["shard_ch"]))
-        print()
+#        print(f"partition table")
+#        for i, shard in enumerate(self.shards):
+#            print("%d %12s %12s %s" % (i, f'{shard["offset"]:,}', f'{shard["length"]:,}', shard["shard_ch"]))
+#        print()
 
 
     def load_shard(self, shard):
@@ -131,13 +131,11 @@ class MappingLookupSearch:
 
         if self._relrec_ids is None:
             self._relrec_ids = [ x["id"] for x in self.relrec_offsets ]
-            print(self._relrec_ids)
         offset = bsearch(self._relrec_ids, artist_credit_id)
         if offset < 0:
             print("artist not found")
             return
         relrec = self.relrec_offsets[offset]
-        print("found artist")
 
         r_file = os.path.join(self.index_dir, "relrec_data.pickle")
         with open(r_file, "rb") as f:
@@ -156,15 +154,24 @@ class MappingLookupSearch:
     def search(self, req):
 
         artist_ids = req["artist_ids"]
-        print("artist ids", artist_ids)
         artist_name = FuzzyIndex.encode_string(req["artist_name"])
         recording_name = FuzzyIndex.encode_string(req["recording_name"])
         release_name = FuzzyIndex.encode_string(req["release_name"])
 
         results = []
         for artist_id in artist_ids:
-            self.load_relrecs_for_artist(artist_id)
-            rec_index = self.relrec_recording_indexes[artist_id]
+            try:
+                self.load_relrecs_for_artist(artist_id)
+            except KeyError:
+                print("artist '%s' not found on this shard." % req["artist_name"])
+                continue
+
+            try:
+                rec_index = self.relrec_recording_indexes[artist_id]
+            except KeyError:
+                print("relrecs for '%s' not found on this shard." % req["artist_name"])
+                continue
+
             rec_results = rec_index.search(recording_name, min_confidence=RECORDING_CONFIDENCE)
             for result in rec_results:
                 results.append({ "artist_name": artist_name, 

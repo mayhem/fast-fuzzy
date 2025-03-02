@@ -3,7 +3,7 @@ import json
 from random import randint
 import urllib.parse
 
-from locust import HttpUser, task, between
+from locust import HttpUser, task, constant
 
 DATA_FILE = "../../typesense_queries.txt"
 docs = []
@@ -12,7 +12,7 @@ with open(DATA_FILE, "r") as f:
         docs.append(json.loads(line))
 
 class FuzzySearch(HttpUser):
-    wait_time = 1
+    wait_time = constant(1)
 
     @task()
     def do_search(self):
@@ -21,4 +21,4 @@ class FuzzySearch(HttpUser):
         artist = urllib.parse.quote(docs[i]["artist"])
         recording = urllib.parse.quote(docs[i]["recording"])
         print(f'/search?a={artist}&r={recording}')
-        self.client.get(f'/search?a={artist}&r={recording}', name="/search")
+        self.client.get(f'/search?a={artist}&rc={recording}', name="/search")

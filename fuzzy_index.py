@@ -70,7 +70,7 @@ class FuzzyIndex:
 
         query_matrix = self.vectorizer.transform([query_string])
         # TOTUNE: k might need tuning
-        results = self.index.knnQueryBatch(query_matrix, k=15, num_threads=5)
+        results = self.index.knnQueryBatch(query_matrix, k=5, num_threads=5)
         output = []
         for i, conf in zip(results[0][0], results[0][1]):
             data = self.index_data[i]
