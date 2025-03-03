@@ -1,4 +1,4 @@
-FROM ghcr.io/abebus/free-threaded-python-docker-image:main
+FROM python:3.8 
 
 RUN apt search postgresql-server
 RUN apt-get update \
@@ -27,4 +27,4 @@ COPY . /code/fuzzy
 
 CMD uwsgi --gid=www-data --uid=www-data --http-socket :3031 \
           --vhost --module=server --callable=app --chdir=/code/fuzzy \
-          --enable-threads --processes=1 --threads=20
+          --enable-threads --processes=20

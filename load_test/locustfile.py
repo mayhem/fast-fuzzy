@@ -20,5 +20,4 @@ class FuzzySearch(HttpUser):
         i = randint(0, len(docs) - 1)
         artist = urllib.parse.quote(docs[i]["artist"])
         recording = urllib.parse.quote(docs[i]["recording"])
-        print(f'/search?a={artist}&r={recording}')
         self.client.get(f'/search?a={artist}&rc={recording}', name="/search")
