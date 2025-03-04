@@ -27,10 +27,6 @@ MAX_THREADS = 8
 class MappingLookupIndex:
 
     def create(self, conn, index_dir):
-
-        # TODO: VA and more complex artist credits probably not handled correctly
-        self.artist_index = FuzzyIndex()
-
         last_artist_combined = None
         last_row = None
         current_part_id = None
@@ -38,6 +34,7 @@ class MappingLookupIndex:
         t0 = monotonic()
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as curs:
             artist_data = []
+            stupid_artist_data = []  # reserved for stupid artists like !!!
             recording_data = []
             release_data = []
             relrec_offsets = []
@@ -58,8 +55,8 @@ class MappingLookupIndex:
                                JOIN release rel
                                  ON rel.gid = release_mbid
                            ORDER BY artist_credit_id""")
-#                              WHERE artist_credit_id < 10000
-#                                 WHERE artist_credit_id > 2605409 and artist_credit_id < 2605414
+# WHERE artist_credit_id < 10000
+#                              WHERE artist_credit_id > 2605409 and artist_credit_id < 2605414
 
             print("load data")
             index_file = os.path.join(index_dir, "relrec_data.pickle")
@@ -74,14 +71,19 @@ class MappingLookupIndex:
                     if last_row is not None and row["artist_credit_id"] != last_row["artist_credit_id"]:
                         # Save artist data for artist index
                         encoded = FuzzyIndex.encode_string(last_row["artist_credit_name"])
-                        if not encoded:
-                            last_row = row
-                            continue
+                        if encoded:
+                            artist_data.append({ "text": encoded,
+                                                 "index": last_row["artist_credit_id"] })
+                            part_ch = encoded[0]
+                        else:
+                            encoded = FuzzyIndex.encode_string_for_stupid_artists(last_row["artist_credit_name"])
+                            if not encoded:
+                                last_row = row
+                                continue
+                            stupid_artist_data.append({ "text": encoded, 
+                                                        "index": last_row["artist_credit_id"] })
+                            part_ch = "$"
 
-
-                        artist_data.append({ "text": encoded,
-                                             "index": last_row["artist_credit_id"] })
-           
 
                         # Remove duplicate release/id entries
                         release_data = [dict(t) for t in {tuple(d.items()) for d in release_data}]
@@ -98,7 +100,7 @@ class MappingLookupIndex:
                         relrec_offsets.append({ "id": last_row["artist_credit_id"],
                                                 "offset": relrec_offset,
                                                 "length": relrec_data_size,
-                                                "part_ch": encoded[0]})
+                                                "part_ch": part_ch})
 
                         relrec_offset += relrec_data_size
                         relrec_f.write(p_release_data)
@@ -106,7 +108,8 @@ class MappingLookupIndex:
 
 
                     recording_data.append({ "text": FuzzyIndex.encode_string(row["recording_name"]) or "",
-                                            "id": row["recording_id"] })
+                                            "id": row["recording_id"],
+                                            "release": row["release_id"] })
                     release_data.append({ "text": FuzzyIndex.encode_string(row["release_name"]) or "",
                                           "id": row["release_id"] })
 
@@ -114,8 +117,13 @@ class MappingLookupIndex:
 
                 # dump out the last bits of data
                 encoded = FuzzyIndex.encode_string(row["artist_credit_name"])
-                artist_data.append({ "text": encoded,
-                                     "index": row["artist_credit_id"] })
+                if encoded:
+                    artist_data.append({ "text": encoded,
+                                         "index": row["artist_credit_id"] })
+                else:
+                    encoded = FuzzyIndex.encode_string_for_stupid_artists(last_row["artist_credit_name"])
+                    stupid_artist_data.append({ "text": encoded,
+                                               "index": row["artist_credit_id"] })
 
                 p_release_data = dumps(release_data)
                 p_recording_data = dumps(recording_data)
@@ -161,13 +169,19 @@ class MappingLookupIndex:
         with open(s_file, "wb") as f:
             dump(shard_table, f)
 
-        print("Build artist index")
-        self.artist_index.build(artist_data, "text")
-        print("Save artist index")
-        self.artist_index.save(index_dir)
+        print("Build/save artist indexe")
+        artist_index = FuzzyIndex(name="artist_index")
+        artist_index.build(artist_data, "text")
+        artist_index.save(index_dir)
+
+        if stupid_artist_data:
+            print("Build/save stupid artist indexes")
+            stupid_artist_index = FuzzyIndex(name="stupid_artist_index")
+            stupid_artist_index.build(stupid_artist_data, "text")
+            stupid_artist_index.save(index_dir)
 
         t1 = monotonic()
-        print("loaded data and build artist index in %.1f seconds." % (t1 - t0))
+        print("loaded data and build artist indexes in %.1f seconds." % (t1 - t0))
 
 
 if __name__ == "__main__":

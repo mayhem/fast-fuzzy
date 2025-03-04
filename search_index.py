@@ -83,10 +83,10 @@ class MappingLookupSearch:
                 chars += row[2]
             self.shards.append({ "offset": offset, "length": length, "shard_ch": chars })
 
-#        print(f"partition table")
-#        for i, shard in enumerate(self.shards):
-#            print("%d %12s %12s %s" % (i, f'{shard["offset"]:,}', f'{shard["length"]:,}', shard["shard_ch"]))
-#        print()
+        print(f"partition table")
+        for i, shard in enumerate(self.shards):
+            print("%d %12s %12s %s" % (i, f'{shard["offset"]:,}', f'{shard["length"]:,}', shard["shard_ch"]))
+        print()
 
 
     def load_shard(self, shard):
@@ -194,11 +194,14 @@ class MappingLookupSearch:
 
             try:
                 rec_index = self.relrec_recording_indexes[artist_id]
+                rel_index = self.relrec_release_indexes[artist_id]
             except KeyError:
                 print("relrecs for '%s' not found on this shard." % req["artist_name"])
                 continue
 
             rec_results = rec_index.search(recording_name, min_confidence=RECORDING_CONFIDENCE)
+            rel_results = rel_index.search(release_name, min_confidence=RELEASE_CONFIDENCE)
+
             for result in rec_results:
                 results.append({ "artist_name": artist_name, 
                                  "artist_credit_id": artist_id,
@@ -211,7 +214,7 @@ class MappingLookupSearch:
 
 if __name__ == "__main__":
     from tabulate import tabulate
-    s = MappingLookupSearch("small_index", 2)
+    s = MappingLookupSearch("index", 2)
     s.split_shards()
     s.load_shard(1)
     results = s.search({ "artist_ids": [65], "artist_name": "portishead", "release_name": "dummy", "recording_name": "strangers" })
