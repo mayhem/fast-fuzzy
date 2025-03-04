@@ -59,6 +59,7 @@ class MappingLookupIndex:
                                  ON rel.gid = release_mbid
                            ORDER BY artist_credit_id""")
 #                              WHERE artist_credit_id < 10000
+#                                 WHERE artist_credit_id > 2605409 and artist_credit_id < 2605414
 
             print("load data")
             index_file = os.path.join(index_dir, "relrec_data.pickle")
@@ -74,7 +75,9 @@ class MappingLookupIndex:
                         # Save artist data for artist index
                         encoded = FuzzyIndex.encode_string(last_row["artist_credit_name"])
                         if not encoded:
+                            last_row = row
                             continue
+
 
                         artist_data.append({ "text": encoded,
                                              "index": last_row["artist_credit_id"] })
@@ -128,6 +131,7 @@ class MappingLookupIndex:
 
                 recording_data = []
                 release_data = []
+
 
 
         # Sort the relrecs in unidecode space

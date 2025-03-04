@@ -10,6 +10,8 @@ import struct
 import os
 import sys
 
+from tabulate import tabulate
+
 from fuzzy_index import FuzzyIndex
 from shard_histogram import shard_histogram
 from utils import split_dict_evenly
@@ -90,8 +92,6 @@ class MappingLookupSearch:
     def load_shard(self, shard):
         """ load/init the data needed to operate the shard, loads relrecs_offsets for this shard! """
 
-        print("load shard: %d" % shard)
-
         if self.shards is None:
             self.split_shards()
 
@@ -120,21 +120,24 @@ class MappingLookupSearch:
 
         self.relrec_offsets = sorted(self.relrec_offsets, key=lambda x: x["id"])
 
+    def haystack(self, artist_id):
+        for relrec_off in self.relrec_offsets:
+            print("%d %s" % (relrec_off["id"], relrec_off["part_ch"]))
+
 
     def load_relrecs_for_artist(self, artist_credit_id):
         """ Load one artist's release and recordings data from disk. Correct relrec_offsets chunk must be loaded. """
 
         # Have we loaded this already? If so, bail!
         if artist_credit_id in self.relrec_release_indexes:
-            print("aready have artist")
-            return
+            return True
 
         if self._relrec_ids is None:
             self._relrec_ids = [ x["id"] for x in self.relrec_offsets ]
         offset = bsearch(self._relrec_ids, artist_credit_id)
         if offset < 0:
-            print("artist not found")
-            return
+            print("artist not found in relrec offsets")
+            return False
         relrec = self.relrec_offsets[offset]
 
         r_file = os.path.join(self.index_dir, "relrec_data.pickle")
@@ -144,26 +147,49 @@ class MappingLookupSearch:
             recording_data = load(f)
 
         release_index = FuzzyIndex()
-        release_index.build(release_data, "text")
+        try:
+            release_index.build(release_data, "text")
+        except ValueError:
+            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
+            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
+            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
+            print(release_data)
+            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
+            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
+            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
+
         recording_index = FuzzyIndex()
-        recording_index.build(recording_data, "text")
+        try:
+            recording_index.build(recording_data, "text")
+        except ValueError:
+            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
+            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
+            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
+            print(recording_data)
+            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
+            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
+            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
+            return False
 
         self.relrec_release_indexes[artist_credit_id] = release_index
         self.relrec_recording_indexes[artist_credit_id] = recording_index
+
+        return True
 
     def search(self, req):
 
         artist_ids = req["artist_ids"]
         artist_name = FuzzyIndex.encode_string(req["artist_name"])
-        recording_name = FuzzyIndex.encode_string(req["recording_name"])
         release_name = FuzzyIndex.encode_string(req["release_name"])
+        recording_name = FuzzyIndex.encode_string(req["recording_name"])
+
+#        print(f"{artist_name:<30} {req['artist_name']:<30}")
+#        print(f"{recording_name:<30} {req['recording_name']:<30}")
 
         results = []
         for artist_id in artist_ids:
-            try:
-                self.load_relrecs_for_artist(artist_id)
-            except KeyError:
-                print("artist '%s' not found on this shard." % req["artist_name"])
+            if not self.load_relrecs_for_artist(artist_id):
+                print(f"artist {artist_id} not found on this shard. {self.shard}")
                 continue
 
             try:

@@ -22,7 +22,6 @@ def create_shard_processes(ms):
         response_queue = Queue()
         p = Process(target=mapping_lookup_process, args=(request_queue, response_queue, INDEX_DIR, NUM_SHARDS, i))
         p.start()
-        print("Created process %d" % p.pid)
         shards.append({ "process" : p, "in_q": request_queue, "out_q": response_queue })
         for ch in ms.shards[i]["shard_ch"]:
             shard_index[ch] = i
@@ -68,7 +67,13 @@ def index():
 
     encoded = FuzzyIndex.encode_string(artist)
     artists = artist_index.search(artist, min_confidence=ARTIST_CONFIDENCE)
-    req = { "artist_ids": [ x["index"] for x in artists ],
+
+    ids = []
+    for a in artists:
+        if a["text"][0] == encoded[0]:
+            ids.append(a["index"])
+
+    req = { "artist_ids": ids,
             "artist_name": artist,
             "release_name": release,
             "recording_name": recording }
