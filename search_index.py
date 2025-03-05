@@ -83,10 +83,10 @@ class MappingLookupSearch:
                 chars += row[2]
             self.shards.append({ "offset": offset, "length": length, "shard_ch": chars })
 
-        print(f"partition table")
-        for i, shard in enumerate(self.shards):
-            print("%d %12s %12s %s" % (i, f'{shard["offset"]:,}', f'{shard["length"]:,}', shard["shard_ch"]))
-        print()
+#        print(f"partition table")
+#        for i, shard in enumerate(self.shards):
+#            print("%d %12s %12s %s" % (i, f'{shard["offset"]:,}', f'{shard["length"]:,}', shard["shard_ch"]))
+#        print()
 
 
     def load_shard(self, shard):
@@ -147,32 +147,19 @@ class MappingLookupSearch:
             recording_data = load(f)
 
         release_index = FuzzyIndex()
-        try:
+        if release_data:
             release_index.build(release_data, "text")
-        except ValueError:
-            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
-            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
-            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
-            print(release_data)
-            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
-            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
-            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
-
-        recording_index = FuzzyIndex()
-        try:
-            recording_index.build(recording_data, "text")
-        except ValueError:
-            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
-            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
-            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
-            print(recording_data)
-            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
-            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
-            print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
+        else:
             return False
 
-        self.relrec_release_indexes[artist_credit_id] = release_index
-        self.relrec_recording_indexes[artist_credit_id] = recording_index
+        recording_index = FuzzyIndex()
+        if recording_data:
+            recording_index.build(recording_data, "text")
+        else:
+            return False
+
+        self.relrec_release_indexes[artist_credit_id] = (release_index, release_data)
+        self.relrec_recording_indexes[artist_credit_id] = (recording_index, recording_data)
 
         return True
 
@@ -183,8 +170,9 @@ class MappingLookupSearch:
         release_name = FuzzyIndex.encode_string(req["release_name"])
         recording_name = FuzzyIndex.encode_string(req["recording_name"])
 
-#        print(f"{artist_name:<30} {req['artist_name']:<30}")
-#        print(f"{recording_name:<30} {req['recording_name']:<30}")
+        print(artist_ids)
+        print(f"{artist_name:<30} {req['artist_name']:<30}")
+        print(f"{recording_name:<30} {req['recording_name']:<30}")
 
         results = []
         for artist_id in artist_ids:
@@ -193,20 +181,33 @@ class MappingLookupSearch:
                 continue
 
             try:
-                rec_index = self.relrec_recording_indexes[artist_id]
-                rel_index = self.relrec_release_indexes[artist_id]
+                rec_index, recording_data = self.relrec_recording_indexes[artist_id]
+                rel_index, release_data = self.relrec_release_indexes[artist_id]
             except KeyError:
                 print("relrecs for '%s' not found on this shard." % req["artist_name"])
                 continue
 
             rec_results = rec_index.search(recording_name, min_confidence=RECORDING_CONFIDENCE)
-            rel_results = rel_index.search(release_name, min_confidence=RELEASE_CONFIDENCE)
+            if release_name:
+                rel_results = rel_index.search(release_name, min_confidence=RELEASE_CONFIDENCE)
+
+            rev_index = {}
+            for rec in recording_data:
+                rev_index[rec["id"]] = rec
 
             for result in rec_results:
+                release_name = None
+                for rel_data in release_data:
+                    if rel_data["id"] == rev_index[result["id"]]:
+                        release_name = rel_data["text"]
+                rec_data = rev_index[result["id"]]
                 results.append({ "artist_name": artist_name, 
                                  "artist_credit_id": artist_id,
+                                 "release_id": rec_data["release"],
+                                 "release_name": release_name,
                                  "recording_name": recording_name,
                                  "recording_id": result["id"],
+                                 "score": rec_data["score"],
                                  "recording_confidence": result["confidence"] })
 
         return results

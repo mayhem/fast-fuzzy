@@ -49,6 +49,7 @@ class MappingLookupIndex:
                                   , recording_name
                                   , rec.id AS recording_id
                                   , combined_lookup
+                                  , score
                                FROM mapping.canonical_musicbrainz_data
                                JOIN recording rec
                                  ON rec.gid = recording_mbid
@@ -109,7 +110,8 @@ class MappingLookupIndex:
 
                     recording_data.append({ "text": FuzzyIndex.encode_string(row["recording_name"]) or "",
                                             "id": row["recording_id"],
-                                            "release": row["release_id"] })
+                                            "release": row["release_id"],
+                                            "score": row["score"]})
                     release_data.append({ "text": FuzzyIndex.encode_string(row["release_name"]) or "",
                                           "id": row["release_id"] })
 

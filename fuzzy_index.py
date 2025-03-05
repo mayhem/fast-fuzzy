@@ -78,19 +78,26 @@ class FuzzyIndex:
         except OSError:
             return False
 
-    def search(self, query_string, min_confidence):
+
+    def search(self, query_string, min_confidence, debug=False):
+        """ Carry out search, returns list of dicts: "text", "id", "confidence" """
+
         if self.index is None:
             raise IndexError("Must build index before searching")
 
         query_matrix = self.vectorizer.transform([query_string])
         # TOTUNE: k might need tuning
-        results = self.index.knnQueryBatch(query_matrix, k=5, num_threads=5)
+        results = self.index.knnQueryBatch(query_matrix, k=15, num_threads=5)
         output = []
+        if debug:
+            print("Search results for '%s':" % query_string)
         for i, conf in zip(results[0][0], results[0][1]):
             data = self.index_data[i]
             confidence = fabs(conf)
             if confidence >= min_confidence:
                 data["confidence"] = fabs(conf)
                 output.append(data)
+                if debug:
+                    print("  %-30s %10d %.3f" % (data["text"][:30], data["index"], data["confidence"]))
 
         return output

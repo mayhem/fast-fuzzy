@@ -4,3 +4,4 @@ nmslib-metabrainz
 psycopg2-binary
 Flask
 tabulate
+lb-matching-tools@git+https://github.com/metabrainz/listenbrainz-matching-tools.git@v2024.01.30.1
