@@ -2,7 +2,7 @@ import atexit
 from multiprocessing import Process, Queue
 from multiprocessing.queues import Empty
 
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, redirect
 from werkzeug.exceptions import BadRequest, ServiceUnavailable, NotFound
 from lb_matching_tools.cleaner import MetadataCleaner
 
@@ -70,21 +70,11 @@ def cleanup():
 
 atexit.register(cleanup)
 
-@app.route("/")
-def index():
-    return render_template("index.html")
+def mapping_search(artist, release, recording):
 
-
-@app.route("/search")
-def search():
     mc = MetadataCleaner()
-    artist = request.args.get("a", "")
-    release = request.args.get("rl", "")
-    recording = request.args.get("rc", "")
-    if not artist or not recording:
-        raise BadRequest("a and rc must be given")
-
     encoded_artist = artist_index.encode_string(artist)
+    shard_ch = None
 
     # Is this a normal (not stupid) artist?
     if encoded_artist:
@@ -94,41 +84,47 @@ def search():
             confidence = NORMAL_ARTIST_CONFIDENCE
 
         # Do a normal artist search
-        artists = artist_index.search(encoded_artist, min_confidence=confidence, debug=False)
+        artists = artist_index.search(encoded_artist, min_confidence=confidence, debug=True)
         try:
             max_confidence = max([ a["confidence"] for a in artists ])
         except ValueError:
             max_confidence = 0.0
+        print(artists)
 
         if max_confidence <= CLEANER_CONFIDENCE:
             cleaned_artist = artist_index.encode_string(mc.clean_artist(artist))
             if cleaned_artist != encoded_artist:
-                artists.extend(artist_index.search(cleaned_artist, min_confidence=confidence, debug=False))
-                shard_ch = cleaned_artist[0]
-        else:
-            shard_ch = encoded_artist[0]
+                artists.extend(artist_index.search(cleaned_artist, min_confidence=confidence, debug=True))
+
+        if not artists:
+            raise NotFound("Artist '%s' was not found." % artist)
+
+        artists = sorted(artists, key=lambda a: a["confidence"], reverse=True)
+        shard_ch = artists[0]["shard_ch"]
 
         # Collect the artist ids
         ids = []
         for a in artists:
-            if a["text"][0] == shard_ch:
-                ids.append(a["index"])
+            if a["shard_ch"] == shard_ch:
+                ids.append(a["id"])
+
+        print("ids: ", ids)
     else:
-        # If we didn't find anything, search the stupid artists and send them to the stooopid shard
+        # If the name contains no word characters (stoopid), search the stupid artists and send them to the stooopid shard
         if stupid_artist_index:
             encoded = FuzzyIndex.encode_string_for_stupid_artists(artist)
             artists = stupid_artist_index.search(encoded, min_confidence=NORMAL_ARTIST_CONFIDENCE)
             shard_ch = "$"
-            ids = [ a["index"] for a in artists ]
+            ids = [ a["id"] for a in artists ]
         else:
             return jsonify({})
 
     if not ids:
         raise NotFound("Artist '%s' was not found." % artist)
 
-    print("search on: ")
+    print("on shard '%s' search on: " % shard_ch)
     for a in artists:
-        print("  %-30s %10d %.3f" % (a["text"][:30], a["index"], a["confidence"]))
+        print("  %-30s %10d %.3f" % (a["text"][:30], a["id"], a["confidence"]))
 
     # Make the search request
     req = { "artist_ids": ids,
@@ -146,4 +142,35 @@ def search():
     except Empty:
         raise ServiceUnavailable("Search timed out.")
 
-    return jsonify(response)
+    return response
+
+@app.route("/")
+def index():
+    return redirect("/search")
+
+@app.route("/search", methods=["GET"])
+def search():
+    return render_template("index.html")
+
+@app.route("/search", methods=["POST"])
+def search_post():
+    artist = request.form.get("artist", "")
+    release = request.form.get("release", "")
+    recording = request.form.get("recording", "")
+    if not artist or not recording:
+        raise BadRequest("artist and recording must be given")
+
+    return render_template("index.html", results=mapping_search(artist, release, recording),
+                                         artist=artist,
+                                         release=release,
+                                         recording=recording)
+
+@app.route("/1/search")
+def api_search():
+    artist = request.args.get("a", "")
+    release = request.args.get("rl", "")
+    recording = request.args.get("rc", "")
+    if not artist or not recording:
+        raise BadRequest("a and rc must be given")
+
+    return jsonify(mapping_search(artist, release, recording))

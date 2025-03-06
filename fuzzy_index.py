@@ -32,6 +32,7 @@ class FuzzyIndex:
     @staticmethod
     def encode_string(text):
         """Remove spaces, punctuation, convert non-ascii characters to some romanized equivalent, lower case, return"""
+        #TODO: sometimes there are trailing spaces: 'Ji He Xue Mo Yang ' 
         if text is None:
             return None
         return unidecode(re.sub("[ _]+", "", re.sub(r'[^\w ]+', '', text)).strip().lower())[:MAX_ENCODED_STRING_LENGTH]
@@ -94,10 +95,14 @@ class FuzzyIndex:
         for i, conf in zip(results[0][0], results[0][1]):
             data = self.index_data[i]
             confidence = fabs(conf)
+            data["confidence"] = confidence
             if confidence >= min_confidence:
-                data["confidence"] = fabs(conf)
                 output.append(data)
-                if debug:
-                    print("  %-30s %10d %.3f" % (data["text"][:30], data["index"], data["confidence"]))
+                is_below=" "
+            else:
+                is_below="!"
+
+            if debug:
+                print("%c %-30s %10d %.3f" % (is_below, data["text"][:30], data["id"], data["confidence"]))
 
         return output

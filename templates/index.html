@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    {% block head %}
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    {% endblock %}
+
+    {% block styles %}
+      <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css" >
+    {% endblock %}
+
+    <title>Mapping Search Test Interface</title>
+  </head>
+  <body>
+  <main class="container">
+     <h1>Fast fuzzy mapping test interface</h1>
+
+	<form action="search" method="POST">
+	   <span>Artist:</span>
+	   <input name="artist" value="{{ artist }}">
+	   <span>Release:</span>
+	   <input name="release" value="{{ release }}">
+	   <span>Recording:</span>
+	   <input name="recording" value="{{ recording }}">
+	   <button type="submit">Lookup</button>
+	</form>
+
+      <table>
+	 {% for result in results %}
+	 <tr>
+	   <td>{{ result.artist_name }}</td>
+	   <td>{{ result.release_name }}</td>
+	   <td>{{ result.recording_name }}</td>
+	 </tr>
+	 {% endfor %}
+      </table>
+   
+  </main>
+  {% block scripts %}
+  {% endblock %}
+  </body>
+</html>
+

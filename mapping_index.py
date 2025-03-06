@@ -6,10 +6,12 @@ import os
 from struct import pack
 import sys
 
+from alphabet_detector import AlphabetDetector
 import psycopg2
 from psycopg2.extras import DictCursor, execute_values
 
 from fuzzy_index import FuzzyIndex
+from database import Mapping, create_db
 
 # TODO: Remove _ from the combined field of canonical data dump. Done, but make PR
 
@@ -20,14 +22,12 @@ DB_CONNECT = "dbname=musicbrainz_db user=musicbrainz host=localhost port=5432 pa
 #DB_CONNECT = "dbname=musicbrainz_db user=musicbrainz host=musicbrainz-docker_db_1 port=5432 password=musicbrainz"
 
 ARTIST_CONFIDENCE_THRESHOLD = .45
-CHUNK_SIZE = 100000
+NUM_ROWS_PER_COMMIT = 2500
 MAX_THREADS = 8
-
 
 class MappingLookupIndex:
 
     def create(self, conn, index_dir):
-        last_artist_combined = None
         last_row = None
         current_part_id = None
 
@@ -40,26 +40,46 @@ class MappingLookupIndex:
             relrec_offsets = []
             relrec_offset = 0
 
+            db_file = os.path.join(index_dir, "mapping.db")
+            create_db(db_file)
+
             print("execute query")
             curs.execute(""" SELECT artist_credit_id
-                                  , artist_mbids
+                                  , artist_mbids::TEXT[]
                                   , artist_credit_name
-                                  , release_name
+                                  , COALESCE(array_agg(a.sort_name ORDER BY acn.position)) as artist_credit_sortname
                                   , rel.id AS release_id
-                                  , recording_name
+                                  , rel.gid::TEXT AS release_mbid
+                                  , release_name
                                   , rec.id AS recording_id
-                                  , combined_lookup
+                                  , rec.gid::TEXT AS recording_mbid
+                                  , recording_name
                                   , score
                                FROM mapping.canonical_musicbrainz_data
                                JOIN recording rec
                                  ON rec.gid = recording_mbid
                                JOIN release rel
                                  ON rel.gid = release_mbid
+                               JOIN artist_credit_name acn
+                                 ON artist_credit_id = acn.artist_credit
+                               JOIN artist a
+                                 ON acn.artist = a.id
+                           GROUP BY artist_credit_id
+                                  , artist_mbids
+                                  , artist_credit_name
+                                  , release_name
+                                  , rel.id
+                                  , recording_name
+                                  , rec.id
+                                  , score
                            ORDER BY artist_credit_id""")
-# WHERE artist_credit_id < 10000
-#                              WHERE artist_credit_id > 2605409 and artist_credit_id < 2605414
+#                              WHERE artist_credit_id > 1230420 and artist_credit_id < 1230800
+#                              WHERE artist_credit_id < 10000
 
             print("load data")
+            mapping_data = []
+            artist_mapping_data = []
+            ad = AlphabetDetector()
             index_file = os.path.join(index_dir, "relrec_data.pickle")
             with open(index_file, "wb") as relrec_f:
                 for i, row in enumerate(curs):
@@ -69,22 +89,35 @@ class MappingLookupIndex:
                     if i % 1000000 == 0:
                         print("Indexed %d rows" % i)
 
+                    
                     if last_row is not None and row["artist_credit_id"] != last_row["artist_credit_id"]:
+
                         # Save artist data for artist index
                         encoded = FuzzyIndex.encode_string(last_row["artist_credit_name"])
                         if encoded:
+                            shard_ch = encoded[0]
                             artist_data.append({ "text": encoded,
-                                                 "index": last_row["artist_credit_id"] })
-                            part_ch = encoded[0]
+                                                 "id": last_row["artist_credit_id"],
+                                                 "shard_ch": shard_ch })
+                            if not ad.only_alphabet_chars(last_row["artist_credit_name"], "LATIN"):
+                                encoded = FuzzyIndex.encode_string(last_row["artist_credit_sortname"][0])
+                                if encoded:
+#                                    print("%-30s %s %-30s %s" % (last_row["artist_credit_name"], shard_ch,
+#                                                                 last_row["artist_credit_sortname"][0], encoded[0]))
+                                    # 幾何学模様 a                  Kikagaku Moyo c
+                                    artist_data.append({ "text": encoded,
+                                                         "id": last_row["artist_credit_id"],
+                                                         "shard_ch": shard_ch })
+
                         else:
                             encoded = FuzzyIndex.encode_string_for_stupid_artists(last_row["artist_credit_name"])
                             if not encoded:
                                 last_row = row
                                 continue
+                            shard_ch = "$"
                             stupid_artist_data.append({ "text": encoded, 
-                                                        "index": last_row["artist_credit_id"] })
-                            part_ch = "$"
-
+                                                        "id": last_row["artist_credit_id"],
+                                                        "shard_ch": shard_ch})
 
                         # Remove duplicate release/id entries
                         release_data = [dict(t) for t in {tuple(d.items()) for d in release_data}]
@@ -101,13 +134,30 @@ class MappingLookupIndex:
                         relrec_offsets.append({ "id": last_row["artist_credit_id"],
                                                 "offset": relrec_offset,
                                                 "length": relrec_data_size,
-                                                "part_ch": part_ch})
+                                                "shard_ch": shard_ch})
 
                         relrec_offset += relrec_data_size
                         relrec_f.write(p_release_data)
                         relrec_f.write(p_recording_data)
 
+                        # Go through the collected mapping data for this artist and set shard_ch, then copy to mapping data
+                        for am in artist_mapping_data:
+                            am[-1] = shard_ch
+                            mapping_data.append(am)
+                        artist_mapping_data = []
 
+                    artist_mapping_data.append([row["artist_credit_id"], 
+                                                ",".join(row["artist_mbids"]),
+                                                row["artist_credit_name"],
+                                                row["artist_credit_sortname"][0],
+                                                row["release_id"],
+                                                row["release_mbid"],
+                                                row["release_name"],
+                                                row["recording_id"],
+                                                row["recording_mbid"],
+                                                row["recording_name"],
+                                                row["score"],
+                                                None])
                     recording_data.append({ "text": FuzzyIndex.encode_string(row["recording_name"]) or "",
                                             "id": row["recording_id"],
                                             "release": row["release_id"],
@@ -117,15 +167,30 @@ class MappingLookupIndex:
 
                     last_row = row
 
+                    if len(mapping_data) > NUM_ROWS_PER_COMMIT:
+                        Mapping.insert_many(mapping_data, fields=[Mapping.artist_credit_id,
+                                            Mapping.artist_mbids,
+                                            Mapping.artist_credit_name,
+                                            Mapping.artist_credit_sortname,
+                                            Mapping.release_id,
+                                            Mapping.release_mbid,
+                                            Mapping.release_name,
+                                            Mapping.recording_id,
+                                            Mapping.recording_mbid,
+                                            Mapping.recording_name,
+                                            Mapping.score,
+                                            Mapping.shard_ch]).execute()
+                        mapping_data = []
+
                 # dump out the last bits of data
                 encoded = FuzzyIndex.encode_string(row["artist_credit_name"])
                 if encoded:
                     artist_data.append({ "text": encoded,
-                                         "index": row["artist_credit_id"] })
+                                         "id": row["artist_credit_id"] })
                 else:
                     encoded = FuzzyIndex.encode_string_for_stupid_artists(last_row["artist_credit_name"])
                     stupid_artist_data.append({ "text": encoded,
-                                               "index": row["artist_credit_id"] })
+                                               "id": row["artist_credit_id"] })
 
                 p_release_data = dumps(release_data)
                 p_recording_data = dumps(recording_data)
@@ -134,7 +199,7 @@ class MappingLookupIndex:
                 relrec_offsets.append({ "id": row["artist_credit_id"],
                                         "offset": relrec_offset,
                                         "length": relrec_data_size,
-                                        "part_ch": encoded[0]})
+                                        "shard_ch": encoded[0]})
 
                 relrec_f.write(p_release_data)
                 relrec_f.write(p_recording_data)
@@ -142,26 +207,44 @@ class MappingLookupIndex:
                 recording_data = []
                 release_data = []
 
+                if mapping_data:
+                    Mapping.insert_many(mapping_data, fields=[Mapping.artist_credit_id,
+                                        Mapping.artist_mbids,
+                                        Mapping.artist_credit_name,
+                                        Mapping.artist_credit_sortname,
+                                        Mapping.release_id,
+                                        Mapping.release_mbid,
+                                        Mapping.release_name,
+                                        Mapping.recording_id,
+                                        Mapping.recording_mbid,
+                                        Mapping.recording_name,
+                                        Mapping.score,
+                                        Mapping.shard_ch]).execute()
+
+                print("Create mapping indexes")
+                Mapping.add_index(Mapping.artist_credit_id)
+                Mapping.add_index(Mapping.release_id)
+                Mapping.add_index(Mapping.recording_id)
 
 
         # Sort the relrecs in unidecode space
-        relrec_sorted = sorted(relrec_offsets, key=lambda x: (x["part_ch"], x["id"]))
+        relrec_sorted = sorted(relrec_offsets, key=lambda x: (x["shard_ch"], x["id"]))
 
         print("Write relrec offsets table")
         r_file = os.path.join(index_dir, "relrec_offset_table.binary")
         with open(r_file, "wb") as f:
             for relrec in relrec_sorted:
-                f.write(pack("IIIc", relrec["offset"], relrec["length"], relrec["id"], bytes(relrec["part_ch"], "utf-8")))
+                f.write(pack("IIIc", relrec["offset"], relrec["length"], relrec["id"], bytes(relrec["shard_ch"], "utf-8")))
 
         print("Write shard offsets table")
         shard_offsets = {}
-        relrec_offsets = sorted(relrec_offsets, key=lambda x: (x["part_ch"], x["offset"]))
+        relrec_offsets = sorted(relrec_offsets, key=lambda x: (x["shard_ch"], x["offset"]))
         for r_index, r_offset in enumerate(relrec_offsets):
             relrec_offset = r_index * 13
-            if r_offset["part_ch"] not in shard_offsets:
-                shard_offsets[r_offset["part_ch"]] = {"shard_ch":r_offset["part_ch"], "offset": relrec_offset, "length": 13}
+            if r_offset["shard_ch"] not in shard_offsets:
+                shard_offsets[r_offset["shard_ch"]] = {"shard_ch":r_offset["shard_ch"], "offset": relrec_offset, "length": 13}
             else:
-                shard_offsets[r_offset["part_ch"]]["length"] += 13
+                shard_offsets[r_offset["shard_ch"]]["length"] += 13
 
         shard_table = sorted(shard_offsets.values(), key=lambda x: (x["shard_ch"], x["offset"]))
         for i, s in enumerate(shard_table):
@@ -171,7 +254,7 @@ class MappingLookupIndex:
         with open(s_file, "wb") as f:
             dump(shard_table, f)
 
-        print("Build/save artist indexe")
+        print("Build/save artist indexes")
         artist_index = FuzzyIndex(name="artist_index")
         artist_index.build(artist_data, "text")
         artist_index.save(index_dir)

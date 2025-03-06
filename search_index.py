@@ -108,21 +108,21 @@ class MappingLookupSearch:
         self.relrec_offsets = []
         while True:
             try:
-                offset, length, id, part_ch = struct.unpack("IIIc", data[d_offset:d_offset+13])
+                offset, length, id, shard_ch = struct.unpack("IIIc", data[d_offset:d_offset+13])
             except struct.error:
                 break
 
             self.relrec_offsets.append({ "offset": offset, 
                                          "length": length,
                                          "id": id,
-                                         "part_ch": part_ch})
+                                         "shard_ch": shard_ch})
             d_offset += 13
 
         self.relrec_offsets = sorted(self.relrec_offsets, key=lambda x: x["id"])
 
     def haystack(self, artist_id):
         for relrec_off in self.relrec_offsets:
-            print("%d %s" % (relrec_off["id"], relrec_off["part_ch"]))
+            print("%d %s" % (relrec_off["id"], relrec_off["shard_ch"]))
 
 
     def load_relrecs_for_artist(self, artist_credit_id):
@@ -170,9 +170,9 @@ class MappingLookupSearch:
         release_name = FuzzyIndex.encode_string(req["release_name"])
         recording_name = FuzzyIndex.encode_string(req["recording_name"])
 
-        print(artist_ids)
-        print(f"{artist_name:<30} {req['artist_name']:<30}")
-        print(f"{recording_name:<30} {req['recording_name']:<30}")
+        print("shard search -- relrec: ", artist_ids)
+        print(f"relrec: {artist_name:<30} {req['artist_name']:<30}")
+        print(f"relrec: {recording_name:<30} {req['recording_name']:<30}")
 
         results = []
         for artist_id in artist_ids:
@@ -187,30 +187,53 @@ class MappingLookupSearch:
                 print("relrecs for '%s' not found on this shard." % req["artist_name"])
                 continue
 
-            rec_results = rec_index.search(recording_name, min_confidence=RECORDING_CONFIDENCE)
+            rec_results = rec_index.search(recording_name, min_confidence=RECORDING_CONFIDENCE, debug=True)
             if release_name:
-                rel_results = rel_index.search(release_name, min_confidence=RELEASE_CONFIDENCE)
+                rel_results = rel_index.search(release_name, min_confidence=RELEASE_CONFIDENCE, debug=True)
 
-            rev_index = {}
+            rev_rec_index = {}
             for rec in recording_data:
-                rev_index[rec["id"]] = rec
+                rev_rec_index[rec["id"]] = rec
+
+            rev_rel_index = {}
+            for rel in release_data:
+                rev_rel_index[rel["id"]] = rel
 
             for result in rec_results:
-                release_name = None
-                for rel_data in release_data:
-                    if rel_data["id"] == rev_index[result["id"]]:
-                        release_name = rel_data["text"]
-                rec_data = rev_index[result["id"]]
-                results.append({ "artist_name": artist_name, 
-                                 "artist_credit_id": artist_id,
-                                 "release_id": rec_data["release"],
-                                 "release_name": release_name,
-                                 "recording_name": recording_name,
-                                 "recording_id": result["id"],
-                                 "score": rec_data["score"],
-                                 "recording_confidence": result["confidence"] })
+                rec_data = rev_rec_index[result["id"]]
+                try:
+                    rel_data = rev_rel_index[result["release"]]
+                except KeyError:
+                    rel_data = None
 
-        return results
+                added = False
+                if release_name:
+                    for rel in rel_results:
+                        if rel["id"] == rel_data["id"]:
+                            added = True
+                            results.append({ "artist_name": artist_name, 
+                                             "artist_credit_id": artist_id,
+                                             "release_id": rel["id"],
+                                             "release_name": rel["text"],
+                                             "release_confidence": rel["confidence"],
+                                             "recording_id": result["id"],
+                                             "recording_name": rec_data["text"],
+                                             "score": rec_data["score"],
+                                             "recording_confidence": result["confidence"] })
+                if not added:
+                    results.append({ "artist_name": artist_name, 
+                                     "artist_credit_id": artist_id,
+                                     "release_id": 0,
+                                     "release_name": "",
+                                     "release_confidence": 0.0,
+                                     "recording_name": rec_data["text"],
+                                     "recording_id": result["id"],
+                                     "score": rec_data["score"],
+                                     "recording_confidence": result["confidence"] })
+        if release_name:
+            return sorted(results, key=lambda r: (r["release_confidence"]+r["recording_confidence"])/2, reverse=True)
+        else:
+            return sorted(results, key=lambda r: r["recording_confidence"], reverse=True)
 
 
 if __name__ == "__main__":
