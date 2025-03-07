@@ -13,6 +13,7 @@ class Mapping(Model):
     class Meta:
         database = db
         table_name = "mapping"
+        primary_key = False
 
     artist_credit_id = IntegerField(null=False)
     artist_mbids = TextField(null=False)
@@ -40,3 +41,7 @@ def create_db(db_file):
     db.init(db_file)
     db.connect()
     db.create_tables((Mapping,))
+
+def open_db(db_file):
+    db.init(db_file)
+    db.connect()

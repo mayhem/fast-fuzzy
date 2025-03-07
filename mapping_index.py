@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 
+import csv
 from time import monotonic
 from pickle import dumps, dump
+from subprocess import Popen, PIPE
 import os
-from struct import pack
 import sys
 
 from alphabet_detector import AlphabetDetector
@@ -11,7 +12,7 @@ import psycopg2
 from psycopg2.extras import DictCursor, execute_values
 
 from fuzzy_index import FuzzyIndex
-from database import Mapping, create_db
+from database import Mapping, create_db, open_db, db
 
 # TODO: Remove _ from the combined field of canonical data dump. Done, but make PR
 
@@ -22,7 +23,7 @@ DB_CONNECT = "dbname=musicbrainz_db user=musicbrainz host=localhost port=5432 pa
 #DB_CONNECT = "dbname=musicbrainz_db user=musicbrainz host=musicbrainz-docker_db_1 port=5432 password=musicbrainz"
 
 ARTIST_CONFIDENCE_THRESHOLD = .45
-NUM_ROWS_PER_COMMIT = 2500
+NUM_ROWS_PER_COMMIT = 25000
 MAX_THREADS = 8
 
 class MappingLookupIndex:
@@ -42,6 +43,7 @@ class MappingLookupIndex:
 
             db_file = os.path.join(index_dir, "mapping.db")
             create_db(db_file)
+            db.close()
 
             print("execute query")
             curs.execute(""" SELECT artist_credit_id
@@ -64,6 +66,7 @@ class MappingLookupIndex:
                                  ON artist_credit_id = acn.artist_credit
                                JOIN artist a
                                  ON acn.artist = a.id
+                              WHERE artist_credit_id > 1230420 and artist_credit_id < 1230800
                            GROUP BY artist_credit_id
                                   , artist_mbids
                                   , artist_credit_name
@@ -73,15 +76,27 @@ class MappingLookupIndex:
                                   , rec.id
                                   , score
                            ORDER BY artist_credit_id""")
-#                              WHERE artist_credit_id > 1230420 and artist_credit_id < 1230800
 #                              WHERE artist_credit_id < 10000
 
             print("load data")
             mapping_data = []
             artist_mapping_data = []
             ad = AlphabetDetector()
-            index_file = os.path.join(index_dir, "relrec_data.pickle")
-            with open(index_file, "wb") as relrec_f:
+            import_file = os.path.join(index_dir, "import.csv")
+            with open(import_file, 'w', newline='') as csvfile:
+                fieldnames = ["artist_credit_id", 
+                              "artist_mbids", 
+                              "artist_credit_name", 
+                              "artist_credit_sortname", 
+                              "release_id", 
+                              "release_mbid", 
+                              "release_name", 
+                              "recording_id", 
+                              "recording_mbid", 
+                              "recording_name", 
+                              "score", 
+                              "shard_ch"]
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames, dialect="unix")
                 for i, row in enumerate(curs):
                     if i == 0:
                         continue
@@ -122,64 +137,28 @@ class MappingLookupIndex:
                         # Remove duplicate release/id entries
                         release_data = [dict(t) for t in {tuple(d.items()) for d in release_data}]
 
-
-                        # pickle release/recording data
-                        p_release_data = dumps(release_data)
-                        p_recording_data = dumps(recording_data)
                         recording_data = []
                         release_data = []
                 
-                        # Write out the release/recording data and update artist_offsets
-                        relrec_data_size = len(p_release_data) + len(p_recording_data)
-                        relrec_offsets.append({ "id": last_row["artist_credit_id"],
-                                                "offset": relrec_offset,
-                                                "length": relrec_data_size,
-                                                "shard_ch": shard_ch})
-
-                        relrec_offset += relrec_data_size
-                        relrec_f.write(p_release_data)
-                        relrec_f.write(p_recording_data)
-
                         # Go through the collected mapping data for this artist and set shard_ch, then copy to mapping data
                         for am in artist_mapping_data:
-                            am[-1] = shard_ch
+                            am["shard_ch"] = shard_ch
                             mapping_data.append(am)
                         artist_mapping_data = []
 
-                    artist_mapping_data.append([row["artist_credit_id"], 
-                                                ",".join(row["artist_mbids"]),
-                                                row["artist_credit_name"],
-                                                row["artist_credit_sortname"][0],
-                                                row["release_id"],
-                                                row["release_mbid"],
-                                                row["release_name"],
-                                                row["recording_id"],
-                                                row["recording_mbid"],
-                                                row["recording_name"],
-                                                row["score"],
-                                                None])
-                    recording_data.append({ "text": FuzzyIndex.encode_string(row["recording_name"]) or "",
-                                            "id": row["recording_id"],
-                                            "release": row["release_id"],
-                                            "score": row["score"]})
+                    arow = dict(row)
+                    arow["artist_mbids"] = ",".join(row["artist_mbids"])
+                    arow["shard_ch"] = None
+                    arow["artist_credit_sortname"] = row["artist_credit_sortname"][0]
+                    artist_mapping_data.append(arow)
                     release_data.append({ "text": FuzzyIndex.encode_string(row["release_name"]) or "",
                                           "id": row["release_id"] })
 
                     last_row = row
 
                     if len(mapping_data) > NUM_ROWS_PER_COMMIT:
-                        Mapping.insert_many(mapping_data, fields=[Mapping.artist_credit_id,
-                                            Mapping.artist_mbids,
-                                            Mapping.artist_credit_name,
-                                            Mapping.artist_credit_sortname,
-                                            Mapping.release_id,
-                                            Mapping.release_mbid,
-                                            Mapping.release_name,
-                                            Mapping.recording_id,
-                                            Mapping.recording_mbid,
-                                            Mapping.recording_name,
-                                            Mapping.score,
-                                            Mapping.shard_ch]).execute()
+                        for mrow in mapping_data:
+                            writer.writerow(mrow)
                         mapping_data = []
 
                 # dump out the last bits of data
@@ -192,49 +171,25 @@ class MappingLookupIndex:
                     stupid_artist_data.append({ "text": encoded,
                                                "id": row["artist_credit_id"] })
 
-                p_release_data = dumps(release_data)
-                p_recording_data = dumps(recording_data)
-
-                relrec_data_size = len(p_release_data) + len(p_recording_data)
-                relrec_offsets.append({ "id": row["artist_credit_id"],
-                                        "offset": relrec_offset,
-                                        "length": relrec_data_size,
-                                        "shard_ch": encoded[0]})
-
-                relrec_f.write(p_release_data)
-                relrec_f.write(p_recording_data)
-
-                recording_data = []
-                release_data = []
-
                 if mapping_data:
-                    Mapping.insert_many(mapping_data, fields=[Mapping.artist_credit_id,
-                                        Mapping.artist_mbids,
-                                        Mapping.artist_credit_name,
-                                        Mapping.artist_credit_sortname,
-                                        Mapping.release_id,
-                                        Mapping.release_mbid,
-                                        Mapping.release_name,
-                                        Mapping.recording_id,
-                                        Mapping.recording_mbid,
-                                        Mapping.recording_name,
-                                        Mapping.score,
-                                        Mapping.shard_ch]).execute()
-
-                print("Create mapping indexes")
-                Mapping.add_index(Mapping.artist_credit_id)
-                Mapping.add_index(Mapping.release_id)
-                Mapping.add_index(Mapping.recording_id)
+                    for mrow in mapping_data:
+                        writer.writerow(mrow)
 
 
-        # Sort the relrecs in unidecode space
-        relrec_sorted = sorted(relrec_offsets, key=lambda x: (x["shard_ch"], x["id"]))
+        print("Import data into SQLite")
+        try:
+            with Popen(['sqlite3', db_file], stdin=PIPE, stdout=PIPE, universal_newlines=True, bufsize=1) as sql:
+                print('.separator ","', file=sql.stdin, flush=True)
+                print(".import '%s' mapping" % import_file, file=sql.stdin, flush=True)
+                print("create index artist_credit_id_ndx on mapping(artist_credit_id);", file=sql.stdin, flush=True)
+                print("create index release_id_ndx on mapping(release_id);", file=sql.stdin, flush=True)
+                print("create index recording_id_ndx on mapping(recording_id);", file=sql.stdin, flush=True)
+        except subprocess.CalledProcessError as err:
+            print("Failed to import data into SQLite: ", err)
+            return
 
-        print("Write relrec offsets table")
-        r_file = os.path.join(index_dir, "relrec_offset_table.binary")
-        with open(r_file, "wb") as f:
-            for relrec in relrec_sorted:
-                f.write(pack("IIIc", relrec["offset"], relrec["length"], relrec["id"], bytes(relrec["shard_ch"], "utf-8")))
+        # Get rid of the CSV files now that we've imported it
+        os.unlink(import_file)
 
         print("Write shard offsets table")
         shard_offsets = {}
