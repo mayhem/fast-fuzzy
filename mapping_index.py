@@ -14,7 +14,7 @@ from psycopg2.extras import DictCursor, execute_values
 from fuzzy_index import FuzzyIndex
 from database import Mapping, create_db, open_db, db
 
-# TODO: Remove _ from the combined field of canonical data dump. Done, but make PR
+# TODO: Remove the combined field of canonical data dump. Done, but make PR
 
 # For wolf
 DB_CONNECT = "dbname=musicbrainz_db user=musicbrainz host=localhost port=5432 password=musicbrainz"
@@ -57,7 +57,7 @@ class MappingLookupIndex:
                                   , rec.gid::TEXT AS recording_mbid
                                   , recording_name
                                   , score
-                               FROM mapping.canonical_musicbrainz_data
+                               FROM mapping.canonical_musicbrainz_data_release_support
                                JOIN recording rec
                                  ON rec.gid = recording_mbid
                                JOIN release rel
@@ -66,7 +66,6 @@ class MappingLookupIndex:
                                  ON artist_credit_id = acn.artist_credit
                                JOIN artist a
                                  ON acn.artist = a.id
-                              WHERE artist_credit_id > 1230420 and artist_credit_id < 1230800
                            GROUP BY artist_credit_id
                                   , artist_mbids
                                   , artist_credit_name
@@ -77,6 +76,7 @@ class MappingLookupIndex:
                                   , score
                            ORDER BY artist_credit_id""")
 #                              WHERE artist_credit_id < 10000
+#                              WHERE artist_credit_id > 1230420 and artist_credit_id < 1230800
 
             print("load data")
             mapping_data = []
@@ -134,9 +134,6 @@ class MappingLookupIndex:
                                                         "id": last_row["artist_credit_id"],
                                                         "shard_ch": shard_ch})
 
-                        # Remove duplicate release/id entries
-                        release_data = [dict(t) for t in {tuple(d.items()) for d in release_data}]
-
                         recording_data = []
                         release_data = []
                 
@@ -151,8 +148,6 @@ class MappingLookupIndex:
                     arow["shard_ch"] = None
                     arow["artist_credit_sortname"] = row["artist_credit_sortname"][0]
                     artist_mapping_data.append(arow)
-                    release_data.append({ "text": FuzzyIndex.encode_string(row["release_name"]) or "",
-                                          "id": row["release_id"] })
 
                     last_row = row
 
@@ -189,25 +184,7 @@ class MappingLookupIndex:
             return
 
         # Get rid of the CSV files now that we've imported it
-        os.unlink(import_file)
-
-        print("Write shard offsets table")
-        shard_offsets = {}
-        relrec_offsets = sorted(relrec_offsets, key=lambda x: (x["shard_ch"], x["offset"]))
-        for r_index, r_offset in enumerate(relrec_offsets):
-            relrec_offset = r_index * 13
-            if r_offset["shard_ch"] not in shard_offsets:
-                shard_offsets[r_offset["shard_ch"]] = {"shard_ch":r_offset["shard_ch"], "offset": relrec_offset, "length": 13}
-            else:
-                shard_offsets[r_offset["shard_ch"]]["length"] += 13
-
-        shard_table = sorted(shard_offsets.values(), key=lambda x: (x["shard_ch"], x["offset"]))
-        for i, s in enumerate(shard_table):
-            print(f"{i}: {s['offset']:<12,} {s['length']:<12,} {s['shard_ch']}")
-
-        s_file = os.path.join(index_dir, "shard_table.pickle")
-        with open(s_file, "wb") as f:
-            dump(shard_table, f)
+        #os.unlink(import_file)
 
         print("Build/save artist indexes")
         artist_index = FuzzyIndex(name="artist_index")

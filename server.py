@@ -1,11 +1,14 @@
 import atexit
 from multiprocessing import Process, Queue
 from multiprocessing.queues import Empty
+import os
 
 from flask import Flask, request, jsonify, render_template, redirect
 from werkzeug.exceptions import BadRequest, ServiceUnavailable, NotFound
 from lb_matching_tools.cleaner import MetadataCleaner
+from playhouse.shortcuts import model_to_dict
 
+from database import open_db, Mapping
 from search_index import MappingLookupSearch
 from search_process import mapping_lookup_process
 from fuzzy_index import FuzzyIndex
@@ -25,17 +28,14 @@ SEARCH_TIMEOUT = 1  # in seconds
 def create_shard_processes(ms):
 
     shards = []
-    shard_index = {}
     for i in range(NUM_SHARDS):
         request_queue = Queue()
         response_queue = Queue()
         p = Process(target=mapping_lookup_process, args=(request_queue, response_queue, INDEX_DIR, NUM_SHARDS, i))
         p.start()
         shards.append({ "process" : p, "in_q": request_queue, "out_q": response_queue })
-        for ch in ms.shards[i]["shard_ch"]:
-            shard_index[ch] = i
 
-    return shards, shard_index
+    return shards
 
 def stop_shard_processes():
 
@@ -54,7 +54,7 @@ def stop_shard_processes():
 
 ms = MappingLookupSearch(INDEX_DIR, NUM_SHARDS)
 ms.split_shards()
-shards, shard_index = create_shard_processes(ms)
+shards = create_shard_processes(ms)
 
 artist_index = FuzzyIndex("artist_index")
 artist_index.load(INDEX_DIR)
@@ -63,6 +63,7 @@ stupid_artist_index = FuzzyIndex("stupid_artist_index")
 if not stupid_artist_index.load(INDEX_DIR):
     stupid_artist_index = None
 
+db_file = os.path.join(INDEX_DIR, "mapping.db")
 app = Flask(__name__, template_folder = "templates")
 
 def cleanup():
@@ -75,6 +76,8 @@ def mapping_search(artist, release, recording):
     mc = MetadataCleaner()
     encoded_artist = artist_index.encode_string(artist)
     shard_ch = None
+    
+    open_db(db_file)
 
     # Is this a normal (not stupid) artist?
     if encoded_artist:
@@ -84,17 +87,16 @@ def mapping_search(artist, release, recording):
             confidence = NORMAL_ARTIST_CONFIDENCE
 
         # Do a normal artist search
-        artists = artist_index.search(encoded_artist, min_confidence=confidence, debug=True)
+        artists = artist_index.search(encoded_artist, min_confidence=confidence)
         try:
             max_confidence = max([ a["confidence"] for a in artists ])
         except ValueError:
             max_confidence = 0.0
-        print(artists)
 
         if max_confidence <= CLEANER_CONFIDENCE:
             cleaned_artist = artist_index.encode_string(mc.clean_artist(artist))
             if cleaned_artist != encoded_artist:
-                artists.extend(artist_index.search(cleaned_artist, min_confidence=confidence, debug=True))
+                artists.extend(artist_index.search(cleaned_artist, min_confidence=confidence))
 
         if not artists:
             raise NotFound("Artist '%s' was not found." % artist)
@@ -108,7 +110,6 @@ def mapping_search(artist, release, recording):
             if a["shard_ch"] == shard_ch:
                 ids.append(a["id"])
 
-        print("ids: ", ids)
     else:
         # If the name contains no word characters (stoopid), search the stupid artists and send them to the stooopid shard
         if stupid_artist_index:
@@ -122,9 +123,9 @@ def mapping_search(artist, release, recording):
     if not ids:
         raise NotFound("Artist '%s' was not found." % artist)
 
-    print("on shard '%s' search on: " % shard_ch)
-    for a in artists:
-        print("  %-30s %10d %.3f" % (a["text"][:30], a["id"], a["confidence"]))
+#    print("on shard '%s' search on: " % shard_ch)
+#    for a in artists:
+#        print("  %-30s %10d %.3f" % (a["text"][:30], a["id"], a["confidence"]))
 
     # Make the search request
     req = { "artist_ids": ids,
@@ -132,7 +133,7 @@ def mapping_search(artist, release, recording):
             "release_name": release,
             "recording_name": recording }
     try:
-        shard = shard_index[shard_ch]
+        shard = ms.shards[shard_ch]
     except KeyError:
         raise BadRequest("Shard not availble for char '%s'" % encoded)
 
@@ -142,7 +143,18 @@ def mapping_search(artist, release, recording):
     except Empty:
         raise ServiceUnavailable("Search timed out.")
 
-    return response
+    ids = [ r["recording_id"] for r in response ] 
+    results = []
+    for row in Mapping.select().where(Mapping.recording_id << ids):
+        d = model_to_dict(row)
+        del d["artist_credit_id"]
+        del d["recording_id"]
+        del d["release_id"]
+        del d["score"]
+        del d["shard_ch"]
+        results.append(d)
+        
+    return results
 
 @app.route("/")
 def index():

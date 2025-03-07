@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-from bisect import bisect_left
 from math import ceil
 from pickle import load
 from random import randint
@@ -15,15 +14,11 @@ from tabulate import tabulate
 from fuzzy_index import FuzzyIndex
 from shard_histogram import shard_histogram
 from utils import split_dict_evenly
+from database import Mapping
+from database import open_db
 
 RELEASE_CONFIDENCE = .5
 RECORDING_CONFIDENCE = .5
-
-def bsearch(alist, item):
-    i = bisect_left(alist, item)
-    if i != len(alist) and alist[i] == item:
-        return i
-    return -1
 
 
 class MappingLookupSearch:
@@ -40,6 +35,9 @@ class MappingLookupSearch:
         self.artist_index = None
         self.relrec_release_indexes = {}
         self.relrec_recording_indexes = {}
+        self.relrec_combined_indexes = {}
+
+        self.db_file = os.path.join(index_dir, "mapping.db")
 
     @staticmethod
     def chunks(l, n):
@@ -51,101 +49,46 @@ class MappingLookupSearch:
     def split_shards(self):
         """ determine how to break up shards """
 
-        p_file = os.path.join(self.index_dir, "shard_table.pickle")
-        with open(p_file, "rb") as f:
-            partition_table = load(f)
-
-#        print("Loaded partition table")
-#        for i, shard in enumerate(partition_table):
-#            print("%d %12s %12s %s" % (i, f'{shard["offset"]:,}', f'{shard["length"]:,}', shard["shard_ch"]))
-#        print()
-
         # Split the dict based on an even distribution of the value's sums
         split_hist = split_dict_evenly(shard_histogram, self.num_shards)
 
-        # Lookup which partition each element should be in
-        shards = [ [] for i in range(self.num_shards) ]
-        for partition in partition_table:
-            for shard, shard_chars in enumerate(split_hist):
-                if partition["shard_ch"] in shard_chars:
-                    shards[shard].append((partition["offset"], partition["length"], partition["shard_ch"]))
+        self.shards = {}
+        for shard, pairs in enumerate(split_hist):
+            for ch in pairs:
+                self.shards[ch] = shard
 
-        # sort to combine all the rows in one shard into a single row
-        self.shards = []
-        for shard in shards:
-            length = 0
-            chars = ""
-            offset = None
-            for row in shard:
-                if offset is None:
-                    offset = row[0]
-                length += row[1]
-                chars += row[2]
-            self.shards.append({ "offset": offset, "length": length, "shard_ch": chars })
-
-#        print(f"partition table")
-#        for i, shard in enumerate(self.shards):
-#            print("%d %12s %12s %s" % (i, f'{shard["offset"]:,}', f'{shard["length"]:,}', shard["shard_ch"]))
-#        print()
-
-
-    def load_shard(self, shard):
-        """ load/init the data needed to operate the shard, loads relrecs_offsets for this shard! """
-
-        if self.shards is None:
-            self.split_shards()
-
-        offset = self.shards[shard]["offset"]
-        length = self.shards[shard]["length"]
-        self.shard = shard
-
-        r_file = os.path.join(self.index_dir, "relrec_offset_table.binary")
-        with open(r_file, "rb") as f:
-            f.seek(offset)
-            data = f.read(length)
-
-        d_offset = 0
-        self.relrec_offsets = []
-        while True:
-            try:
-                offset, length, id, shard_ch = struct.unpack("IIIc", data[d_offset:d_offset+13])
-            except struct.error:
-                break
-
-            self.relrec_offsets.append({ "offset": offset, 
-                                         "length": length,
-                                         "id": id,
-                                         "shard_ch": shard_ch})
-            d_offset += 13
-
-        self.relrec_offsets = sorted(self.relrec_offsets, key=lambda x: x["id"])
-
-    def haystack(self, artist_id):
-        for relrec_off in self.relrec_offsets:
-            print("%d %s" % (relrec_off["id"], relrec_off["shard_ch"]))
-
-
-    def load_relrecs_for_artist(self, artist_credit_id):
+    def load_artist(self, artist_credit_id):
         """ Load one artist's release and recordings data from disk. Correct relrec_offsets chunk must be loaded. """
 
         # Have we loaded this already? If so, bail!
         if artist_credit_id in self.relrec_release_indexes:
             return True
 
-        if self._relrec_ids is None:
-            self._relrec_ids = [ x["id"] for x in self.relrec_offsets ]
-        offset = bsearch(self._relrec_ids, artist_credit_id)
-        if offset < 0:
-            print("artist not found in relrec offsets")
-            return False
-        relrec = self.relrec_offsets[offset]
-
-        r_file = os.path.join(self.index_dir, "relrec_data.pickle")
-        with open(r_file, "rb") as f:
-            f.seek(relrec["offset"])
-            release_data = load(f)
-            recording_data = load(f)
-
+        release_data = []
+        recording_data = []
+        combined_data = []
+        for row in Mapping.select().where(Mapping.artist_credit_id == artist_credit_id):
+            recording_data.append({ "id": row.recording_id,
+                                    "text": FuzzyIndex.encode_string(row.recording_name),
+                                    "release": row.release_id,
+                                    "score": row.score })
+            release_data.append({ "text": FuzzyIndex.encode_string(row.release_name),
+                                  "id": row.release_id })
+            combined_data.append({ "id": row.recording_id,
+                                   "text": FuzzyIndex.encode_string(row.release_name) +
+                                           FuzzyIndex.encode_string(row.recording_name),
+                                   "release": row.release_id,
+                                   "score": row.score })
+#            print("'%s' '%s' '%s'" % (row.release_name, row.recording_name, 
+#                                      FuzzyIndex.encode_string(row.release_name) +
+#                                      FuzzyIndex.encode_string(row.recording_name)))
+            
+        #from icecream import ic
+        #ic(combined_data)
+            
+        # Remove duplicate release/id entries
+        release_data = [dict(t) for t in {tuple(d.items()) for d in release_data}]
+        
         release_index = FuzzyIndex()
         if release_data:
             release_index.build(release_data, "text")
@@ -158,8 +101,15 @@ class MappingLookupSearch:
         else:
             return False
 
+        combined_index = FuzzyIndex()
+        if combined_data:
+            combined_index.build(combined_data, "text")
+        else:
+            return False
+
         self.relrec_release_indexes[artist_credit_id] = (release_index, release_data)
         self.relrec_recording_indexes[artist_credit_id] = (recording_index, recording_data)
+        self.relrec_combined_indexes[artist_credit_id] = (combined_index, combined_data)
 
         return True
 
@@ -170,26 +120,46 @@ class MappingLookupSearch:
         release_name = FuzzyIndex.encode_string(req["release_name"])
         recording_name = FuzzyIndex.encode_string(req["recording_name"])
 
-        print("shard search -- relrec: ", artist_ids)
-        print(f"relrec: {artist_name:<30} {req['artist_name']:<30}")
-        print(f"relrec: {recording_name:<30} {req['recording_name']:<30}")
+        print(f"      ids:", artist_ids)
+        print(f"   artist: {artist_name:<30} {req['artist_name']:<30}")
+        print(f"  release: {release_name:<30} {req['release_name']:<30}")
+        print(f"recording: {recording_name:<30} {req['recording_name']:<30}")
+        print()
+        
+        open_db(self.db_file)
 
         results = []
         for artist_id in artist_ids:
-            if not self.load_relrecs_for_artist(artist_id):
+            print("artist %d ------------------------------------" % artist_id)
+            if not self.load_artist(artist_id):
                 print(f"artist {artist_id} not found on this shard. {self.shard}")
                 continue
 
             try:
                 rec_index, recording_data = self.relrec_recording_indexes[artist_id]
                 rel_index, release_data = self.relrec_release_indexes[artist_id]
+                combined_index, combined_data = self.relrec_combined_indexes[artist_id]
             except KeyError:
                 print("relrecs for '%s' not found on this shard." % req["artist_name"])
                 continue
-
-            rec_results = rec_index.search(recording_name, min_confidence=RECORDING_CONFIDENCE, debug=True)
+            
+            rec_results = rec_index.search(recording_name, min_confidence=RECORDING_CONFIDENCE)
             if release_name:
-                rel_results = rel_index.search(release_name, min_confidence=RELEASE_CONFIDENCE, debug=True)
+                rel_results = combined_index.search(release_name + recording_name, min_confidence=RELEASE_CONFIDENCE)
+                
+            print("    recording results for '%s'" % recording_name)
+            for res in rec_results:
+                print("        %-8d %-30s %.2f %d" % (res["id"], res["text"], res["confidence"], res["release"]))
+            print()
+
+            if release_name:
+                print("    release results for '%s'" % release_name)
+                if rel_results:
+                    for res in rel_results:
+                        print("       %-8d %-30s %.2f" % (res["id"], res["text"], res["confidence"]))
+                    print()
+                else:
+                    print("    ** No release results **")
 
             rev_rec_index = {}
             for rec in recording_data:
@@ -231,16 +201,21 @@ class MappingLookupSearch:
                                      "score": rec_data["score"],
                                      "recording_confidence": result["confidence"] })
         if release_name:
-            return sorted(results, key=lambda r: (r["release_confidence"]+r["recording_confidence"])/2, reverse=True)
+            results = sorted(results, key=lambda r: (r["release_confidence"]+r["recording_confidence"])/2, reverse=True)
         else:
-            return sorted(results, key=lambda r: r["recording_confidence"], reverse=True)
+            results = sorted(results, key=lambda r: r["recording_confidence"], reverse=True)
+            
+        for r in results:
+            print("%-30s %.2f %-30s %.2f" % (r["release_name"], r["release_confidence"],
+                                             r["recording_name"], r["recording_confidence"]))
+        print()
+        return results
 
 
 if __name__ == "__main__":
     from tabulate import tabulate
-    s = MappingLookupSearch("index", 2)
+    s = MappingLookupSearch("index", 8)
     s.split_shards()
-    s.load_shard(1)
     results = s.search({ "artist_ids": [65], "artist_name": "portishead", "release_name": "dummy", "recording_name": "strangers" })
     results = s.search({ "artist_ids": [963], "artist_name": "morecheeba", "release_name": "who can you tryst", "recording_name": "trigger hippie" })
     print(tabulate(results))

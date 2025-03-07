@@ -104,5 +104,8 @@ class FuzzyIndex:
 
             if debug:
                 print("%c %-30s %10d %.3f" % (is_below, data["text"][:30], data["id"], data["confidence"]))
+        
+        if debug:
+            print()
 
         return output
