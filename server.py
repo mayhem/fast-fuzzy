@@ -143,13 +143,15 @@ def mapping_search(artist, release, recording):
     except Empty:
         raise ServiceUnavailable("Search timed out.")
 
-    ids = [ r["recording_id"] for r in response ] 
+    if len(response) < 1:
+        raise NotFound("Not found")
+        
     results = []
-    for row in Mapping.select().where(Mapping.recording_id << ids):
+    for row in Mapping.select().where((Mapping.release_id == response[0][0]) & (Mapping.recording_id == response[0][1])):
         d = model_to_dict(row)
-        del d["artist_credit_id"]
-        del d["recording_id"]
-        del d["release_id"]
+#        del d["artist_credit_id"]
+#        del d["recording_id"]
+#        del d["release_id"]
         del d["score"]
         del d["shard_ch"]
         results.append(d)
