@@ -126,6 +126,7 @@ class MappingLookupSearch:
                     continue
 
                 rel_results = combined_index.search(release_name + recording_name, min_confidence=RELEASE_CONFIDENCE)
+                rel_results = sorted(rel_results, key=lambda r: (r["confidence"], r["score"]))
                 print("    release results for '%s'" % release_name)
                 if rel_results:
                     for res in rel_results:
@@ -143,6 +144,7 @@ class MappingLookupSearch:
                     continue
 
                 rec_results = rec_index.search(recording_name, min_confidence=RECORDING_CONFIDENCE)
+                rec_results = sorted(rec_results, key=lambda r: (r["confidence"], r["score"]))
                 print("    recording results for '%s'" % recording_name)
                 if rec_results:
                     for res in rec_results:
