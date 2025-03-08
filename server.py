@@ -1,4 +1,5 @@
 import atexit
+from time import monotonic
 from multiprocessing import Process, Queue
 from multiprocessing.queues import Empty
 import os
@@ -23,7 +24,7 @@ NORMAL_ARTIST_CONFIDENCE = .7
 # If the search hit is less than this, clean metadata and search those too!
 CLEANER_CONFIDENCE = .9
 
-SEARCH_TIMEOUT = 1  # in seconds
+SEARCH_TIMEOUT = 2 # in seconds
 
 def create_shard_processes(ms):
 
@@ -127,6 +128,7 @@ def mapping_search(artist, release, recording):
 #    for a in artists:
 #        print("  %-30s %10d %.3f" % (a["text"][:30], a["id"], a["confidence"]))
 
+    conf_index = { a["id"]:a["confidence"] for a in artists }
     # Make the search request
     req = { "artist_ids": ids,
             "artist_name": artist,
@@ -143,17 +145,28 @@ def mapping_search(artist, release, recording):
     except Empty:
         raise ServiceUnavailable("Search timed out.")
 
-    if len(response) < 1:
+    hits, duration = response
+    if len(hits) < 1:
         raise NotFound("Not found")
+
+    release_id, recording_id, r_conf = hits[0]
         
     results = []
-    for row in Mapping.select().where((Mapping.release_id == response[0][0]) & (Mapping.recording_id == response[0][1])):
+    data = Mapping.select().where((Mapping.release_id == release_id) & (Mapping.recording_id == recording_id))
+    for row in data:
         d = model_to_dict(row)
-#        del d["artist_credit_id"]
-#        del d["recording_id"]
-#        del d["release_id"]
         del d["score"]
         del d["shard_ch"]
+        d["r_conf"] = r_conf
+        d["time"] = duration
+        # TODO: Investigate this exception
+        try:
+            d["a_conf"] = conf_index[d["artist_credit_id"]]
+        except KeyError:
+            d["a_conf"] = -1
+        del d["artist_credit_id"]
+        del d["recording_id"]
+        del d["release_id"]
         results.append(d)
         
     return results

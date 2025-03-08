@@ -1,8 +1,9 @@
-FROM python:3.11 
+FROM python:3.12.2
 
 RUN apt search postgresql-server
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+                       build-essential \
 		       postgresql-server-dev-15 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -17,10 +18,13 @@ WORKDIR /code/fuzzy
 COPY requirements.txt /code/fuzzy
 RUN pip install --no-cache-dir -r requirements.txt
 
-RUN apt-get autoremove -y && \
+RUN apt-get purge -y build-essential && \
+    apt-get autoremove -y && \
     apt-get clean -y
 
 # Now install our code, which may change frequently
 COPY . /code/fuzzy
 
-CMD python /code/fuzzy/mapping_index.py /data
+CMD uwsgi --gid=www-data --uid=www-data --http-socket :3031 \
+          --vhost --module=server --callable=app --chdir=/code/fuzzy \
+          --enable-threads --processes=30

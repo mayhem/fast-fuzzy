@@ -29,9 +29,11 @@
       <table>
 	 {% for result in results %}
 	 <tr>
-	   <td>{{ result.artist_name }}</td>
+	   <td>{{ result.artist_credit_name }}</td>
+	   <td>{{ result.a_conf|round(2) }}</td>
 	   <td>{{ result.release_name }}</td>
 	   <td>{{ result.recording_name }}</td>
+	   <td>{{ result.r_conf|round(2) }}</td>
 	 </tr>
 	 {% endfor %}
       </table>

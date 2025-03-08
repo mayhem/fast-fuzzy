@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from multiprocessing import Queue, Process
+from time import monotonic
 
 from search_index import MappingLookupSearch
 
@@ -14,4 +15,6 @@ def mapping_lookup_process(in_q, out_q, index_dir, num_shards, shard):
         if "exit" in req:
             return
 
-        out_q.put(ms.search(req))
+        t0 = monotonic()
+        ret = ms.search(req)
+        out_q.put((ret, "%.3fms" % ((monotonic() - t0) * 1000)))

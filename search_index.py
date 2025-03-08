@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from collections import defaultdict
 from math import ceil
 from pickle import load
 from random import randint
@@ -34,7 +35,7 @@ class MappingLookupSearch:
 
         self.artist_index = None
         self.relrec_recording_indexes = {}
-        self.relrec_combined_indexes = {}
+        self.relrec_release_indexes = {}
 
         self.db_file = os.path.join(index_dir, "mapping.db")
 
@@ -60,39 +61,53 @@ class MappingLookupSearch:
         """ Load one artist's release and recordings data from disk. Correct relrec_offsets chunk must be loaded. """
 
         # Have we loaded this already? If so, bail!
-        if artist_credit_id in self.relrec_combined_indexes:
+        if artist_credit_id in self.relrec_release_indexes:
             return True
 
         recording_data = []
-        combined_data = []
-        for row in Mapping.select().where(Mapping.artist_credit_id == artist_credit_id):
+        recording_releases = defaultdict(list)
+        release_data = []
+        release_ref = {}
+        data = Mapping.select().where(Mapping.artist_credit_id == artist_credit_id)
+        for row in data:
             recording_data.append({ "id": row.recording_id,
                                     "text": FuzzyIndex.encode_string(row.recording_name),
                                     "release": row.release_id,
                                     "score": row.score })
-            combined_data.append({ "id": row.recording_id,
-                                   "text": FuzzyIndex.encode_string(row.release_name) +
-                                           FuzzyIndex.encode_string(row.recording_name),
-                                   "release": row.release_id,
-                                   "score": row.score })
+            recording_releases[row.recording_id].append(row.release_id)
+            encoded = FuzzyIndex.encode_string(row.release_name)
+            if encoded:
+                release_data.append({ "id": row.recording_id,
+                                       "text": FuzzyIndex.encode_string(row.release_name),
+                                       "release": row.release_id,
+                                       "score": row.score })
+                release_ref[encoded] = row.release_id 
 #            print("'%s' '%s' '%s'" % (row.release_name, row.recording_name, 
 #                                      FuzzyIndex.encode_string(row.release_name) +
 #                                      FuzzyIndex.encode_string(row.recording_name)))
             
         recording_index = FuzzyIndex()
         if recording_data:
+            t0 = monotonic()
+            l = [ x["text"] for x in recording_data]
+            s = set(l)
+            print("%d vs %d" % (len(l), len(s)))
             recording_index.build(recording_data, "text")
+            print("rec index %.3fms (%d items)" % ((monotonic() - t0) * 1000, len(recording_data)))
         else:
             return False
 
-        combined_index = FuzzyIndex()
-        if combined_data:
-            combined_index.build(combined_data, "text")
+        release_index = FuzzyIndex()
+        if release_data:
+            flatt = [ { "text": k, "id": v } for k,v in release_ref.items() ]
+            t0 = monotonic()
+            release_index.build(flatt, "text")
+            print("release index %.3fms (%d items)" % ((monotonic() - t0) * 1000, len(flatt)))
         else:
             return False
 
-        self.relrec_recording_indexes[artist_credit_id] = (recording_index, recording_data)
-        self.relrec_combined_indexes[artist_credit_id] = (combined_index, combined_data)
+        self.relrec_recording_indexes[artist_credit_id] = recording_index
+        self.relrec_release_indexes[artist_credit_id] = (release_index, recording_releases)
 
         return True
 
@@ -103,57 +118,97 @@ class MappingLookupSearch:
         release_name = FuzzyIndex.encode_string(req["release_name"])
         recording_name = FuzzyIndex.encode_string(req["recording_name"])
 
-        print(f"      ids:", artist_ids)
-        print(f"   artist: {artist_name:<30} {req['artist_name']:<30}")
-        print(f"  release: {release_name:<30} {req['release_name']:<30}")
-        print(f"recording: {recording_name:<30} {req['recording_name']:<30}")
-        print()
+#        print(f"      ids:", artist_ids)
+#        print(f"   artist: {artist_name:<30} {req['artist_name']:<30}")
+#        print(f"  release: {release_name:<30} {req['release_name']:<30}")
+#        print(f"recording: {recording_name:<30} {req['recording_name']:<30}")
+#        print()
         
         open_db(self.db_file)
 
+        # TODO: Consider the other artists too -- you just pick the best of the first!
         results = []
         for artist_id in artist_ids:
-            print("artist %d ------------------------------------" % artist_id)
+#            print("artist %d ------------------------------------" % artist_id)
             if not self.load_artist(artist_id):
-                print(f"artist {artist_id} not found on this shard. {self.shard}")
+#                print(f"artist {artist_id} not found on this shard. {self.shard}")
                 continue
 
-            if release_name:
-                try:
-                    combined_index, combined_data = self.relrec_combined_indexes[artist_id]
-                except KeyError:
-                    print("relrecs for '%s' not found on this shard." % req["artist_name"])
-                    continue
+            try:
+                rec_index = self.relrec_recording_indexes[artist_id]
+            except KeyError:
+                print("relrecs for '%s' not found on this shard." % req["artist_name"])
+                continue
 
-                rel_results = combined_index.search(release_name + recording_name, min_confidence=RELEASE_CONFIDENCE)
-                rel_results = sorted(rel_results, key=lambda r: (r["confidence"], r["score"]))
-                print("    release results for '%s'" % release_name)
-                if rel_results:
-                    for res in rel_results:
-                        print("        %-8d %-30s %.2f %d" % (res["id"], res["text"], res["confidence"], res["release"]))
-                    print()
-                else:
-                    print("    ** No release results **")
-                return [ (r["release"], r["id"]) for r in rel_results[:3] ]
+            rec_results = rec_index.search(recording_name, min_confidence=RECORDING_CONFIDENCE)
+            rec_results = sorted(rec_results, key=lambda r: (-r["confidence"], r["score"]))
+#            print("    recording results for '%s'" % recording_name)
+#            if rec_results:
+#                for res in rec_results:
+#                    print("       %-8d %-30s %.2f %d %d" % (res["id"], res["text"], res["confidence"], res["release"], res["score"]))
+#            else:
+#                print("    ** No recording results **")
+#            print()
 
-            else:
-                try:
-                    rec_index, recording_data = self.relrec_recording_indexes[artist_id]
-                except KeyError:
-                    print("relrecs for '%s' not found on this shard." % req["artist_name"])
-                    continue
+            if not release_name:
+                return [ (r["release"], r["id"], r["confidence"]) for r in rec_results[:3] ]
 
-                rec_results = rec_index.search(recording_name, min_confidence=RECORDING_CONFIDENCE)
-                rec_results = sorted(rec_results, key=lambda r: (r["confidence"], r["score"]))
-                print("    recording results for '%s'" % recording_name)
-                if rec_results:
-                    for res in rec_results:
-                        print("       %-8d %-30s %.2f %d" % (res["id"], res["text"], res["confidence"], res["release"]))
-                else:
-                    print("    ** No recording results **")
-                print()
-                
-                return [ (r["release"], r["id"]) for r in rec_results[:3] ]
+            try:
+                release_index, recording_releases = self.relrec_release_indexes[artist_id]
+            except KeyError:
+                print("relrecs for '%s' not found on this shard." % req["artist_name"])
+                continue
+
+            rel_results = release_index.search(release_name, min_confidence=RELEASE_CONFIDENCE)
+            rel_results = sorted(rel_results, key=lambda r: -r["confidence"])
+#            print("    release results for '%s'" % release_name)
+#            if rel_results:
+#                for res in rel_results:
+#                    print("        %-8d %-30s %.2f" % (res["id"], res["text"], res["confidence"]))
+#                print()
+#            else:
+#                print("    ** No release results **")
+
+
+            RESULT_THRESHOLD = .5
+            hits = []
+            for rec_res in rec_results:
+                if rec_res["confidence"] < RESULT_THRESHOLD:
+                    break
+                for rel_res in rel_results:
+                    if rel_res["confidence"] < RESULT_THRESHOLD:
+                        break
+                    if rec_res["id"] in recording_releases:
+                        hits.append({ "recording_id": rec_res["id"],
+                                      "recording_text": rec_res["text"],
+                                      "recording_conf": rec_res["confidence"],
+                                      "score": rec_res["score"],
+                                      "release_id": rel_res["id"],
+                                      "release_name": rel_res["text"],
+                                      "release_conf": rel_res["confidence"],
+                                      "confidence": (rec_res["confidence"] + rel_res["confidence"])/2 })
+                        
+            if not hits:
+                return []
+                        
+#            print("    combined results for '%s'" % release_name)
+#            hits = sorted(hits, key=lambda h: h["confidence"], reverse=True)
+#            if hits:
+#                for hit in hits:
+#                    print("        %-8d %-30s %.2f %d %d %-30s %.2f -> %.2f" % (hit["recording_id"],
+#                                                             hit["recording_text"],
+#                                                             hit["recording_conf"],
+#                                                             hit["score"],
+#                                                             hit["release_id"],
+#                                                             hit["release_name"],
+#                                                             hit["release_conf"],
+#                                                             hit["confidence"]
+#                                                              ))
+#                 print()
+#             else:
+#                 print("    ** No hits **")
+
+            return [ (hits[0]["release_id"], hits[0]["recording_id"], hits[0]["confidence"]) ]
                 
 
 if __name__ == "__main__":

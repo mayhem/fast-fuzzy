@@ -20,4 +20,8 @@ class FuzzySearch(HttpUser):
         i = randint(0, len(docs) - 1)
         artist = urllib.parse.quote(docs[i]["artist"])
         recording = urllib.parse.quote(docs[i]["recording"])
-        self.client.get(f'/search?a={artist}&rc={recording}', name="/search")
+        with self.client.get(f'/1/search?a={artist}&rc={recording}', name="/search", catch_response=True) as response:
+            if response.status_code in (200, 404):
+                response.success()
+            else:
+                response.failure("error code: %d" % response.status_code)

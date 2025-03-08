@@ -179,6 +179,7 @@ class MappingLookupIndex:
                 print("create index artist_credit_id_ndx on mapping(artist_credit_id);", file=sql.stdin, flush=True)
                 print("create index release_id_ndx on mapping(release_id);", file=sql.stdin, flush=True)
                 print("create index recording_id_ndx on mapping(recording_id);", file=sql.stdin, flush=True)
+                print("create index release_id_recording_id_ndx on mapping(release_id, recording_id);", file=sql.stdin, flush=True)
         except subprocess.CalledProcessError as err:
             print("Failed to import data into SQLite: ", err)
             return

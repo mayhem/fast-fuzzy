@@ -13,7 +13,7 @@ from unidecode import unidecode
 from utils import ngrams
 
 MAX_ENCODED_STRING_LENGTH = 30
-
+NUM_FUZZY_SEARCH_RESULTS = 500
 
 class FuzzyIndex:
     '''
@@ -87,8 +87,9 @@ class FuzzyIndex:
             raise IndexError("Must build index before searching")
 
         query_matrix = self.vectorizer.transform([query_string])
-        # TOTUNE: k might need tuning
-        results = self.index.knnQueryBatch(query_matrix, k=15, num_threads=5)
+#        t0 = monotonic()
+        results = self.index.knnQueryBatch(query_matrix, k=NUM_FUZZY_SEARCH_RESULTS, num_threads=5)
+#        print("search time: %.2fms" % ((monotonic() - t0) * 1000))
         output = []
         if debug:
             print("Search results for '%s':" % query_string)
