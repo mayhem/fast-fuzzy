@@ -10,8 +10,6 @@ import struct
 import os
 import sys
 
-from tabulate import tabulate
-
 from fuzzy_index import FuzzyIndex
 from shard_histogram import shard_histogram
 from utils import split_dict_evenly
@@ -71,11 +69,7 @@ class MappingLookupSearch:
         data = Mapping.select().where(Mapping.artist_credit_id == artist_credit_id)
         for row in data:
             encoded = FuzzyIndex.encode_string(row.recording_name)
-            recording_data.append({ "id": row.recording_id,
-                                    "text": encoded,
-                                    "release_id": row.release_id,
-                                    "score": row.score })
-            recording_ref[encoded].append({ "recording_id": row.recording_id,
+            recording_ref[encoded].append({ "id": row.recording_id,
                                             "release_id": row.release_id,
                                             "score": row.score })
             recording_releases[row.recording_id].append(row.release_id)
@@ -88,6 +82,14 @@ class MappingLookupSearch:
                                       "text": encoded,
                                       "score": row.score })
                 
+
+        recording_data = []
+        for i, text in enumerate(recording_ref):
+            data = recording_ref[text]
+            recording_data.append({ "text": text,
+                                    "id": i, 
+                                    "recording_data": data })
+
         release_ref = defaultdict(list)
         for release in release_data:
             release_ref[release["text"]].append((release["id"], release["score"]))
@@ -104,8 +106,7 @@ class MappingLookupSearch:
         recording_index = FuzzyIndex()
         if recording_data:
             t0 = monotonic()
-            data = [ { "text": k, "id": 0} for k in recording_ref ]
-            recording_index.build(data, "text")
+            recording_index.build(recording_data, "text")
             print("rec index %.3fms (%d items)" % ((monotonic() - t0) * 1000, len(recording_data)))
         else:
             return False
@@ -118,7 +119,7 @@ class MappingLookupSearch:
         else:
             return False
 
-        self.relrec_recording_indexes[artist_credit_id] = (recording_index, recording_ref)
+        self.relrec_recording_indexes[artist_credit_id] = (recording_index, recording_data)
         self.relrec_release_indexes[artist_credit_id] = (release_index, recording_releases, release_data)
 
         return True
@@ -146,7 +147,7 @@ class MappingLookupSearch:
                 continue
 
             try:
-                rec_index, rec_ref = self.relrec_recording_indexes[artist_id]
+                rec_index, rec_data = self.relrec_recording_indexes[artist_id]
             except KeyError:
                 print("relrecs for '%s' not found on this shard." % req["artist_name"])
                 continue
@@ -154,28 +155,25 @@ class MappingLookupSearch:
             rec_results = rec_index.search(recording_name, min_confidence=RECORDING_CONFIDENCE)
             exp_results = []
             for result in rec_results:
-                for ref in rec_ref[recording_name]:
+                data = rec_data[result["id"]]
+                for d in data["recording_data"]:
                     exp_results.append({ "text": result["text"],
                                          "confidence": result["confidence"],
-                                         "id": ref["recording_id"],
-                                         "score": ref["score"],
-                                         "release_id": ref["release_id"]})
+                                         "id": d["id"],
+                                         "score": d["score"],
+                                         "release_id": d["release_id"]})
                     
             rec_results = sorted(exp_results, key=lambda r: (-r["confidence"], r["score"]))
-            print("recombobulate")
-            for e in rec_results:
-                print("%.3f %-8d %-8d %-8d %s" % (e["confidence"], e["id"], e["score"], e["release_id"], e["text"]))
-            print()
                 
-            print("    recording results for '%s'" % recording_name)
-            print("        rec id   name                     confidence score")
-            if rec_results:
-                for res in rec_results:
-                    if res["confidence"] > .0:
-                        print("        %-8d %-30s %.2f %d" % (res["id"], res["text"], res["confidence"], res["score"]))
-            else:
-                print("    ** No recording results **")
-            print()
+#            print("    recording results for '%s'" % recording_name)
+#            print("        rec id   name                     confidence score")
+#            if rec_results:
+#                for res in rec_results:
+#                    if res["confidence"] > .0:
+#                        print("        %-8d %-30s %.2f %d" % (res["id"], res["text"], res["confidence"], res["score"]))
+#            else:
+#                print("    ** No recording results **")
+#            print()
             
 
             
@@ -199,16 +197,16 @@ class MappingLookupSearch:
                                          "id": release_id,
                                          "score": score })
 
-            rel_results = sorted(exp_results, key=lambda r: -r["confidence"])
-            print("    release results for '%s'" % release_name)
-            if rel_results:
-                print("        rel id   name                     confidence")
-                for res in rel_results:
-                    if res["confidence"] > .0:
-                        print("        %-8d %-30s %.2f" % (res["id"], res["text"], res["confidence"]))
-                print()
-            else:
-                print("    ** No release results **")
+            rel_results = sorted(exp_results, key=lambda r: (-r["confidence"], r["score"]))
+#            print("    release results for '%s'" % release_name)
+#            if rel_results:
+#                print("        rel id   name                     confidence")
+#                for res in rel_results:
+#                    if res["confidence"] > .0:
+#                        print("        %-8d %-30s %.2f" % (res["id"], res["text"], res["confidence"]))
+#                print()
+#            else:
+#                print("    ** No release results **")
 
 
             RESULT_THRESHOLD = .7
@@ -232,23 +230,23 @@ class MappingLookupSearch:
             if not hits:
                 continue
                         
-            print("    combined results for '%s'" % release_name)
-            hits = sorted(hits, key=lambda h: h["confidence"], reverse=True)
-            if hits:
-                print("        rec id   name                     confidence score    rel id   name                conf")
-                for hit in hits:
-                    print("        %-8d %-30s %.2f %-8d %-8d %-30s %.2f -> %.2f" % (hit["recording_id"],
-                                                             hit["recording_text"],
-                                                             hit["recording_conf"],
-                                                             hit["score"],
-                                                             hit["release_id"],
-                                                             hit["release_name"],
-                                                             hit["release_conf"],
-                                                             hit["confidence"]
-                                                              ))
-                print()
-            else:
-                print("    ** No hits **")
+#            print("    combined results for '%s'" % release_name)
+#            hits = sorted(hits, key=lambda h: h["confidence"], reverse=True)
+#            if hits:
+#                print("        rec id   name                     confidence score    rel id   name                conf")
+#                for hit in hits:
+#                    print("        %-8d %-30s %.2f %-8d %-8d %-30s %.2f -> %.2f" % (hit["recording_id"],
+#                                                             hit["recording_text"],
+#                                                             hit["recording_conf"],
+#                                                             hit["score"],
+#                                                             hit["release_id"],
+#                                                             hit["release_name"],
+#                                                             hit["release_conf"],
+#                                                             hit["confidence"]
+#                                                              ))
+#                print()
+#            else:
+#                print("    ** No hits **")
 
             return [ (hits[0]["release_id"], hits[0]["recording_id"], hits[0]["confidence"]) ]
                 

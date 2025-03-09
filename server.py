@@ -150,8 +150,6 @@ def mapping_search(artist, release, recording):
         raise NotFound("Not found")
 
     release_id, recording_id, r_conf = hits[0]
-    print("release ", release_id)
-    print("recording ", recording_id)
         
     results = []
     data = Mapping.select().where((Mapping.release_id == release_id) & (Mapping.recording_id == recording_id))
