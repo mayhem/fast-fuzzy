@@ -60,7 +60,20 @@ class MappingLookupSearch:
 
         # Have we loaded this already? If so, bail!
         if artist_credit_id in self.relrec_release_indexes:
-            return True
+            try:
+                recording_index, recording_data = self.relrec_recording_indexes[artist_credit_id]
+                release_index, recording_releases, release_data = self.relrec_release_indexes[artist_credit_id]
+            except KeyError:
+                print("artist %d not found on this shard." % artist_credit_id)
+                return None
+
+            return {
+                "recording_index": recording_index,
+                "recording_data": recording_data,
+                "release_index": release_index,
+                "recording_releases": recording_releases,
+                "release_data": release_data
+            }
 
         recording_data = []
         recording_releases = defaultdict(list)
@@ -81,7 +94,6 @@ class MappingLookupSearch:
                 release_data.append({ "id": row.release_id,
                                       "text": encoded,
                                       "score": row.score })
-                
 
         recording_data = []
         for i, text in enumerate(recording_ref):
@@ -101,28 +113,30 @@ class MappingLookupSearch:
 #        print("create")
 #        for e in sorted(recording_data, key=lambda x: x["text"]):
 #            print("%.3f %-8d %-8d %-8d %s" % (0.0, e["id"], e["score"], e["release_id"], e["text"]))
-        print()
+#        print()
         
         recording_index = FuzzyIndex()
         if recording_data:
-            t0 = monotonic()
             recording_index.build(recording_data, "text")
-            print("rec index %.3fms (%d items)" % ((monotonic() - t0) * 1000, len(recording_data)))
         else:
-            return False
+            return None
 
         release_index = FuzzyIndex()
         if release_data:
-            t0 = monotonic()
             release_index.build(release_data, "text")
-            print("release index %.3fms (%d items)" % ((monotonic() - t0) * 1000, len(release_data)))
         else:
-            return False
+            return None
 
         self.relrec_recording_indexes[artist_credit_id] = (recording_index, recording_data)
         self.relrec_release_indexes[artist_credit_id] = (release_index, recording_releases, release_data)
 
-        return True
+        return {
+            "recording_index": recording_index,
+            "recording_data": recording_data,
+            "release_index": release_index,
+            "recording_releases": recording_releases,
+            "release_data": release_data
+        }
 
     def search(self, req):
 
@@ -141,21 +155,15 @@ class MappingLookupSearch:
 
         results = []
         for artist_id in artist_ids:
-#            print("artist %d ------------------------------------" % artist_id)
-            if not self.load_artist(artist_id):
-#                print(f"artist {artist_id} not found on this shard. {self.shard}")
+            artist_data = self.load_artist(artist_id)
+            if artist_data is None:
+                print(f"artist {artist_id} not found on this shard. {self.shard}")
                 continue
 
-            try:
-                rec_index, rec_data = self.relrec_recording_indexes[artist_id]
-            except KeyError:
-                print("relrecs for '%s' not found on this shard." % req["artist_name"])
-                continue
-
-            rec_results = rec_index.search(recording_name, min_confidence=RECORDING_CONFIDENCE)
+            rec_results = artist_data["recording_index"].search(recording_name, min_confidence=RECORDING_CONFIDENCE)
             exp_results = []
             for result in rec_results:
-                data = rec_data[result["id"]]
+                data = artist_data["recording_data"][result["id"]]
                 for d in data["recording_data"]:
                     exp_results.append({ "text": result["text"],
                                          "confidence": result["confidence"],
@@ -176,21 +184,13 @@ class MappingLookupSearch:
 #            print()
             
 
-            
-
             if not release_name:
                 return [ (r["release_id"], r["id"], r["confidence"]) for r in rec_results[:3] ]
 
-            try:
-                release_index, recording_releases, release_data = self.relrec_release_indexes[artist_id]
-            except KeyError:
-                print("relrecs for '%s' not found on this shard." % req["artist_name"])
-                continue
-
-            rel_results = release_index.search(release_name, min_confidence=RELEASE_CONFIDENCE)
+            rel_results = artist_data["release_index"].search(release_name, min_confidence=RELEASE_CONFIDENCE)
             exp_results = []
             for result in rel_results:
-                data = release_data[result["id"]]
+                data = artist_data["release_data"][result["id"]]
                 for release_id, score in data["release_id_scores"]:
                     exp_results.append({ "text": result["text"],
                                          "confidence": result["confidence"],
@@ -217,7 +217,7 @@ class MappingLookupSearch:
                 for rel_res in rel_results[:3]:
 #                    if rel_res["confidence"] < RESULT_THRESHOLD:
 #                        break
-                    if rec_res["id"] in recording_releases:
+                    if rec_res["id"] in artist_data["recording_releases"]:
                         hits.append({ "recording_id": rec_res["id"],
                                       "recording_text": rec_res["text"],
                                       "recording_conf": rec_res["confidence"],
@@ -249,12 +249,3 @@ class MappingLookupSearch:
 #                print("    ** No hits **")
 
             return [ (hits[0]["release_id"], hits[0]["recording_id"], hits[0]["confidence"]) ]
-                
-
-if __name__ == "__main__":
-    from tabulate import tabulate
-    s = MappingLookupSearch("index", 8)
-    s.split_shards()
-    results = s.search({ "artist_ids": [65], "artist_name": "portishead", "release_name": "dummy", "recording_name": "strangers" })
-    results = s.search({ "artist_ids": [963], "artist_name": "morecheeba", "release_name": "who can you tryst", "recording_name": "trigger hippie" })
-    print(tabulate(results))
