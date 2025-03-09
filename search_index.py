@@ -67,47 +67,59 @@ class MappingLookupSearch:
         recording_data = []
         recording_releases = defaultdict(list)
         release_data = []
-        release_ref = {}
+        recording_ref = defaultdict(list)
         data = Mapping.select().where(Mapping.artist_credit_id == artist_credit_id)
         for row in data:
+            encoded = FuzzyIndex.encode_string(row.recording_name)
             recording_data.append({ "id": row.recording_id,
-                                    "text": FuzzyIndex.encode_string(row.recording_name),
-                                    "release": row.release_id,
+                                    "text": encoded,
+                                    "release_id": row.release_id,
                                     "score": row.score })
+            recording_ref[encoded].append({ "recording_id": row.recording_id,
+                                            "release_id": row.release_id,
+                                            "score": row.score })
             recording_releases[row.recording_id].append(row.release_id)
+
             encoded = FuzzyIndex.encode_string(row.release_name)
             if encoded:
-                release_data.append({ "id": row.recording_id,
-                                       "text": FuzzyIndex.encode_string(row.release_name),
-                                       "release": row.release_id,
-                                       "score": row.score })
-                release_ref[encoded] = row.release_id 
-#            print("'%s' '%s' '%s'" % (row.release_name, row.recording_name, 
-#                                      FuzzyIndex.encode_string(row.release_name) +
-#                                      FuzzyIndex.encode_string(row.recording_name)))
+                # Another data struct is needed from which to xref search results 
+                # The int passed to the index is the index of this list, where a list of release_ids are.
+                release_data.append({ "id": row.release_id,
+                                      "text": encoded,
+                                      "score": row.score })
+                
+        release_ref = defaultdict(list)
+        for release in release_data:
+            release_ref[release["text"]].append((release["id"], release["score"]))
             
+        release_data = []
+        for i, text in enumerate(release_ref):
+            release_data.append({ "text": text, "id": i, "release_id_scores": release_ref[text] })
+            
+#        print("create")
+#        for e in sorted(recording_data, key=lambda x: x["text"]):
+#            print("%.3f %-8d %-8d %-8d %s" % (0.0, e["id"], e["score"], e["release_id"], e["text"]))
+        print()
+        
         recording_index = FuzzyIndex()
         if recording_data:
             t0 = monotonic()
-            l = [ x["text"] for x in recording_data]
-            s = set(l)
-            print("%d vs %d" % (len(l), len(s)))
-            recording_index.build(recording_data, "text")
+            data = [ { "text": k, "id": 0} for k in recording_ref ]
+            recording_index.build(data, "text")
             print("rec index %.3fms (%d items)" % ((monotonic() - t0) * 1000, len(recording_data)))
         else:
             return False
 
         release_index = FuzzyIndex()
         if release_data:
-            flatt = [ { "text": k, "id": v } for k,v in release_ref.items() ]
             t0 = monotonic()
-            release_index.build(flatt, "text")
-            print("release index %.3fms (%d items)" % ((monotonic() - t0) * 1000, len(flatt)))
+            release_index.build(release_data, "text")
+            print("release index %.3fms (%d items)" % ((monotonic() - t0) * 1000, len(release_data)))
         else:
             return False
 
-        self.relrec_recording_indexes[artist_credit_id] = recording_index
-        self.relrec_release_indexes[artist_credit_id] = (release_index, recording_releases)
+        self.relrec_recording_indexes[artist_credit_id] = (recording_index, recording_ref)
+        self.relrec_release_indexes[artist_credit_id] = (release_index, recording_releases, release_data)
 
         return True
 
@@ -126,7 +138,6 @@ class MappingLookupSearch:
         
         open_db(self.db_file)
 
-        # TODO: Consider the other artists too -- you just pick the best of the first!
         results = []
         for artist_id in artist_ids:
 #            print("artist %d ------------------------------------" % artist_id)
@@ -135,49 +146,79 @@ class MappingLookupSearch:
                 continue
 
             try:
-                rec_index = self.relrec_recording_indexes[artist_id]
+                rec_index, rec_ref = self.relrec_recording_indexes[artist_id]
             except KeyError:
                 print("relrecs for '%s' not found on this shard." % req["artist_name"])
                 continue
 
             rec_results = rec_index.search(recording_name, min_confidence=RECORDING_CONFIDENCE)
-            rec_results = sorted(rec_results, key=lambda r: (-r["confidence"], r["score"]))
-#            print("    recording results for '%s'" % recording_name)
-#            if rec_results:
-#                for res in rec_results:
-#                    print("       %-8d %-30s %.2f %d %d" % (res["id"], res["text"], res["confidence"], res["release"], res["score"]))
-#            else:
-#                print("    ** No recording results **")
-#            print()
+            exp_results = []
+            for result in rec_results:
+                for ref in rec_ref[recording_name]:
+                    exp_results.append({ "text": result["text"],
+                                         "confidence": result["confidence"],
+                                         "id": ref["recording_id"],
+                                         "score": ref["score"],
+                                         "release_id": ref["release_id"]})
+                    
+            rec_results = sorted(exp_results, key=lambda r: (-r["confidence"], r["score"]))
+            print("recombobulate")
+            for e in rec_results:
+                print("%.3f %-8d %-8d %-8d %s" % (e["confidence"], e["id"], e["score"], e["release_id"], e["text"]))
+            print()
+                
+            print("    recording results for '%s'" % recording_name)
+            print("        rec id   name                     confidence score")
+            if rec_results:
+                for res in rec_results:
+                    if res["confidence"] > .0:
+                        print("        %-8d %-30s %.2f %d" % (res["id"], res["text"], res["confidence"], res["score"]))
+            else:
+                print("    ** No recording results **")
+            print()
+            
+
+            
 
             if not release_name:
-                return [ (r["release"], r["id"], r["confidence"]) for r in rec_results[:3] ]
+                return [ (r["release_id"], r["id"], r["confidence"]) for r in rec_results[:3] ]
 
             try:
-                release_index, recording_releases = self.relrec_release_indexes[artist_id]
+                release_index, recording_releases, release_data = self.relrec_release_indexes[artist_id]
             except KeyError:
                 print("relrecs for '%s' not found on this shard." % req["artist_name"])
                 continue
 
             rel_results = release_index.search(release_name, min_confidence=RELEASE_CONFIDENCE)
-            rel_results = sorted(rel_results, key=lambda r: -r["confidence"])
-#            print("    release results for '%s'" % release_name)
-#            if rel_results:
-#                for res in rel_results:
-#                    print("        %-8d %-30s %.2f" % (res["id"], res["text"], res["confidence"]))
-#                print()
-#            else:
-#                print("    ** No release results **")
+            exp_results = []
+            for result in rel_results:
+                data = release_data[result["id"]]
+                for release_id, score in data["release_id_scores"]:
+                    exp_results.append({ "text": result["text"],
+                                         "confidence": result["confidence"],
+                                         "id": release_id,
+                                         "score": score })
+
+            rel_results = sorted(exp_results, key=lambda r: -r["confidence"])
+            print("    release results for '%s'" % release_name)
+            if rel_results:
+                print("        rel id   name                     confidence")
+                for res in rel_results:
+                    if res["confidence"] > .0:
+                        print("        %-8d %-30s %.2f" % (res["id"], res["text"], res["confidence"]))
+                print()
+            else:
+                print("    ** No release results **")
 
 
-            RESULT_THRESHOLD = .5
+            RESULT_THRESHOLD = .7
             hits = []
-            for rec_res in rec_results:
-                if rec_res["confidence"] < RESULT_THRESHOLD:
-                    break
-                for rel_res in rel_results:
-                    if rel_res["confidence"] < RESULT_THRESHOLD:
-                        break
+            for rec_res in rec_results[:3]:
+#                if rec_res["confidence"] < RESULT_THRESHOLD:
+#                    break
+                for rel_res in rel_results[:3]:
+#                    if rel_res["confidence"] < RESULT_THRESHOLD:
+#                        break
                     if rec_res["id"] in recording_releases:
                         hits.append({ "recording_id": rec_res["id"],
                                       "recording_text": rec_res["text"],
@@ -189,24 +230,25 @@ class MappingLookupSearch:
                                       "confidence": (rec_res["confidence"] + rel_res["confidence"])/2 })
                         
             if not hits:
-                return []
+                continue
                         
-#            print("    combined results for '%s'" % release_name)
-#            hits = sorted(hits, key=lambda h: h["confidence"], reverse=True)
-#            if hits:
-#                for hit in hits:
-#                    print("        %-8d %-30s %.2f %d %d %-30s %.2f -> %.2f" % (hit["recording_id"],
-#                                                             hit["recording_text"],
-#                                                             hit["recording_conf"],
-#                                                             hit["score"],
-#                                                             hit["release_id"],
-#                                                             hit["release_name"],
-#                                                             hit["release_conf"],
-#                                                             hit["confidence"]
-#                                                              ))
-#                 print()
-#             else:
-#                 print("    ** No hits **")
+            print("    combined results for '%s'" % release_name)
+            hits = sorted(hits, key=lambda h: h["confidence"], reverse=True)
+            if hits:
+                print("        rec id   name                     confidence score    rel id   name                conf")
+                for hit in hits:
+                    print("        %-8d %-30s %.2f %-8d %-8d %-30s %.2f -> %.2f" % (hit["recording_id"],
+                                                             hit["recording_text"],
+                                                             hit["recording_conf"],
+                                                             hit["score"],
+                                                             hit["release_id"],
+                                                             hit["release_name"],
+                                                             hit["release_conf"],
+                                                             hit["confidence"]
+                                                              ))
+                print()
+            else:
+                print("    ** No hits **")
 
             return [ (hits[0]["release_id"], hits[0]["recording_id"], hits[0]["confidence"]) ]
                 
