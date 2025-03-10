@@ -27,4 +27,4 @@ COPY . /code/fuzzy
 
 CMD uwsgi --gid=www-data --uid=www-data --http-socket :3031 \
           --vhost --module=server --callable=app --chdir=/code/fuzzy \
-          --enable-threads --processes=30
+          --enable-threads --processes=50

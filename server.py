@@ -1,11 +1,11 @@
 import atexit
 from time import monotonic
-from multiprocessing import Process, Queue
+from multiprocessing import Process, Queue, set_start_method
 from multiprocessing.queues import Empty
 import os
 
 from flask import Flask, request, jsonify, render_template, redirect
-from werkzeug.exceptions import BadRequest, ServiceUnavailable, NotFound
+from werkzeug.exceptions import BadRequest, ServiceUnavailable, NotFound, InternalServerError
 from lb_matching_tools.cleaner import MetadataCleaner
 from playhouse.shortcuts import model_to_dict
 
@@ -16,7 +16,7 @@ from fuzzy_index import FuzzyIndex
 
 
 INDEX_DIR = "index"
-NUM_SHARDS = 8
+NUM_SHARDS = 16 
 SHORT_ARTIST_LENGTH = 5
 SHORT_ARTIST_CONFIDENCE = .5
 NORMAL_ARTIST_CONFIDENCE = .7
@@ -25,6 +25,8 @@ NORMAL_ARTIST_CONFIDENCE = .7
 CLEANER_CONFIDENCE = .9
 
 SEARCH_TIMEOUT = 2 # in seconds
+
+set_start_method('spawn')
 
 def create_shard_processes(ms):
 
@@ -133,7 +135,8 @@ def mapping_search(artist, release, recording):
     req = { "artist_ids": ids,
             "artist_name": artist,
             "release_name": release,
-            "recording_name": recording }
+            "recording_name": recording,
+             "pid": os.getpid() }
     try:
         shard = ms.shards[shard_ch]
     except KeyError:
@@ -149,7 +152,10 @@ def mapping_search(artist, release, recording):
     if hits is None or len(hits) < 1:
         raise NotFound("Not found")
 
-    release_id, recording_id, r_conf = hits[0]
+    release_id, recording_id, r_conf, pid = hits[0]
+    
+    if pid != os.getpid():
+        raise InternalServerError("PID mismatch!")
         
     results = []
     data = Mapping.select().where((Mapping.release_id == release_id) & (Mapping.recording_id == recording_id))

@@ -28,15 +28,11 @@ class MappingLookupSearch:
         self.shard = None
         self.shards = None
 
-        self.relrec_offsets = None
-        self._relrec_ids = None
-
         self.artist_index = None
-        self.relrec_recording_indexes = {}
-        self.relrec_release_indexes = {}
+        self.artist_data = {}
 
         self.db_file = os.path.join(index_dir, "mapping.db")
-
+        
     @staticmethod
     def chunks(l, n):
         d, r = divmod(len(l), n)
@@ -59,28 +55,17 @@ class MappingLookupSearch:
         """ Load one artist's release and recordings data from disk. Correct relrec_offsets chunk must be loaded. """
 
         # Have we loaded this already? If so, bail!
-        if artist_credit_id in self.relrec_release_indexes:
-            try:
-                recording_index, recording_data = self.relrec_recording_indexes[artist_credit_id]
-                release_index, recording_releases, release_data = self.relrec_release_indexes[artist_credit_id]
-            except KeyError:
-                print("artist %d not found on this shard." % artist_credit_id)
-                return None
-
-            return {
-                "recording_index": recording_index,
-                "recording_data": recording_data,
-                "release_index": release_index,
-                "recording_releases": recording_releases,
-                "release_data": release_data
-            }
+        try:
+            return self.artist_data[artist_credit_id]
+        except KeyError:
+            pass
 
         recording_data = []
         recording_releases = defaultdict(list)
         release_data = []
         recording_ref = defaultdict(list)
         data = Mapping.select().where(Mapping.artist_credit_id == artist_credit_id)
-        for row in data:
+        for i, row in enumerate(data):
             encoded = FuzzyIndex.encode_string(row.recording_name)
             recording_ref[encoded].append({ "id": row.recording_id,
                                             "release_id": row.release_id,
@@ -94,6 +79,13 @@ class MappingLookupSearch:
                 release_data.append({ "id": row.release_id,
                                       "text": encoded,
                                       "score": row.score })
+                
+        #TODO: Dedup this
+#eb-1  |     release results for 'war'
+#eb-1  |         rel id   name                     confidence
+#eb-1  |         2013864  war                            1.00
+#eb-1  |         2013864  war                            1.00
+#eb-1  |         2013864  war                            1.00
 
         recording_data = []
         for i, text in enumerate(recording_ref):
@@ -127,16 +119,16 @@ class MappingLookupSearch:
         else:
             return None
 
-        self.relrec_recording_indexes[artist_credit_id] = (recording_index, recording_data)
-        self.relrec_release_indexes[artist_credit_id] = (release_index, recording_releases, release_data)
-
-        return {
+        entry = {
             "recording_index": recording_index,
             "recording_data": recording_data,
             "release_index": release_index,
             "recording_releases": recording_releases,
             "release_data": release_data
         }
+        self.artist_data[artist_credit_id] = entry
+        
+        return entry
 
     def search(self, req):
 
@@ -185,7 +177,10 @@ class MappingLookupSearch:
             
 
             if not release_name:
-                return [ (r["release_id"], r["id"], r["confidence"]) for r in rec_results[:3] ]
+                if not rec_results:
+                    continue
+                print ("result: ", rec_results[0]["release_id"], rec_results[0]["id"], rec_results[0]["confidence"], req["pid"])
+                return [ (r["release_id"], r["id"], r["confidence"], req["pid"]) for r in rec_results[:3] ]
 
             rel_results = artist_data["release_index"].search(release_name, min_confidence=RELEASE_CONFIDENCE)
             exp_results = []
@@ -198,15 +193,15 @@ class MappingLookupSearch:
                                          "score": score })
 
             rel_results = sorted(exp_results, key=lambda r: (-r["confidence"], r["score"]))
-#            print("    release results for '%s'" % release_name)
-#            if rel_results:
-#                print("        rel id   name                     confidence")
-#                for res in rel_results:
-#                    if res["confidence"] > .0:
-#                        print("        %-8d %-30s %.2f" % (res["id"], res["text"], res["confidence"]))
-#                print()
-#            else:
-#                print("    ** No release results **")
+#           print("    release results for '%s'" % release_name)
+#           if rel_results:
+#               print("        rel id   name                     confidence")
+#               for res in rel_results:
+#                   if res["confidence"] > .0:
+#                       print("        %-8d %-30s %.2f" % (res["id"], res["text"], res["confidence"]))
+#               print()
+#           else:
+#               print("    ** No release results **")
 
 
             RESULT_THRESHOLD = .7
@@ -226,7 +221,7 @@ class MappingLookupSearch:
                                       "release_name": rel_res["text"],
                                       "release_conf": rel_res["confidence"],
                                       "confidence": (rec_res["confidence"] + rel_res["confidence"])/2 })
-                        
+                       
             if not hits:
                 continue
                         
@@ -248,4 +243,5 @@ class MappingLookupSearch:
 #            else:
 #                print("    ** No hits **")
 
-            return [ (hits[0]["release_id"], hits[0]["recording_id"], hits[0]["confidence"]) ]
+            print ("result: ", hits[0]["release_id"], hits[0]["recording_id"], hits[0]["confidence"], req["pid"])
+            return [ (hits[0]["release_id"], hits[0]["recording_id"], hits[0]["confidence"], req["pid"]) ]
