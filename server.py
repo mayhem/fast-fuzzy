@@ -1,6 +1,6 @@
 import atexit
 from time import monotonic, sleep
-from multiprocessing import Process, Queue
+from multiprocessing import Process, Queue, Manager
 from multiprocessing.queues import Empty
 import os
 from uuid import uuid4
@@ -27,15 +27,18 @@ CLEANER_CONFIDENCE = .9
 
 SEARCH_TIMEOUT = 10 # in seconds
 
+m = Manager()
+
 def create_shard_processes(ms):
 
     shards = []
     for i in range(NUM_SHARDS):
         request_queue = Queue()
         response_queue = Queue()
-        p = Process(target=mapping_lookup_process, args=(request_queue, response_queue, INDEX_DIR, NUM_SHARDS, i))
+        response_dict = m.dict()
+        p = Process(target=mapping_lookup_process, args=(request_queue, response_queue, response_dict, INDEX_DIR, NUM_SHARDS, i))
         p.start()
-        shards.append({ "process" : p, "in_q": request_queue, "out_q": response_queue })
+        shards.append({ "process" : p, "in_q": request_queue, "out_q": response_queue, "out_d": response_dict })
 
     return shards
 
@@ -53,6 +56,8 @@ def stop_shard_processes():
         shard["in_q"].join_thread()
         shard["out_q"].close()
         shard["out_q"].join_thread()
+
+    # todo: cleanup manager
 
 ms = MappingLookupSearch(INDEX_DIR, NUM_SHARDS)
 ms.split_shards()
@@ -147,22 +152,28 @@ def mapping_search(artist, release, recording):
     timeout = monotonic() + SEARCH_TIMEOUT
     count = 0
     t0 = monotonic()
+    out_d = shards[shard]["out_d"]
     while monotonic() < timeout:
-        count += 1
-        response = None
-        try:
-            response = shards[shard]["out_q"].get_nowait()
-        except Empty:
-            sleep(.0001)
-            continue
+        response = out_d.get(req["id"], None)
+        if response is not None:
+            break
+        sleep(0.001)
+        # count += 1
+        # response = None
+        # try:
+        #     response = shards[shard]["out_q"].get_nowait()
+        # except Empty:
+        #     sleep(.0001)
+        #     continue
+        #
+        # if response[2] != req["id"]:
+        #     print("mismatch! %s vs %s =======================================================" % (response[2], req["id"]))
+        #     shards[shard]["out_q"].put(response)
+        #     response = None
+        #     sleep(.0001)
+        #     continue
+        #
 
-        if response[2] != req["id"]:
-            print("mismatch! %s vs %s =======================================================" % (response[2], req["id"]))
-            shards[shard]["out_q"].put(response)
-            sleep(.0001)
-                
-        break 
-    
     t1 = monotonic()
     print("%d loops were made in %.3fs" % (count, t1-t0))
     if response is None:
