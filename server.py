@@ -3,6 +3,7 @@ from time import monotonic
 from multiprocessing import Process, Queue, set_start_method
 from multiprocessing.queues import Empty
 import os
+from uuid import uuid4
 
 from flask import Flask, request, jsonify, render_template, redirect
 from werkzeug.exceptions import BadRequest, ServiceUnavailable, NotFound, InternalServerError
@@ -132,23 +133,36 @@ def mapping_search(artist, release, recording):
 
     conf_index = { a["id"]:a["confidence"] for a in artists }
     # Make the search request
-    req = { "artist_ids": ids,
-            "artist_name": artist,
-            "release_name": release,
-            "recording_name": recording,
-             "pid": os.getpid() }
+    req = {
+        "artist_ids": ids,
+        "artist_name": artist,
+        "release_name": release,
+        "recording_name": recording,
+        "id": str(uuid4())
+    }
     try:
         shard = ms.shards[shard_ch]
     except KeyError:
-        raise BadRequest("Shard not availble for char '%s'" % encoded)
+        raise BadRequest("Shard not availble for char '%s'" % shard_ch)
 
     shards[shard]["in_q"].put(req)
     try:
-        response = shards[shard]["out_q"].get(timeout=SEARCH_TIMEOUT)
+        retries = 3
+        response = None
+        while retries > 0:
+            _response = shards[shard]["out_q"].get(timeout=SEARCH_TIMEOUT)
+            if _response[2] != req["id"]:
+                shards[shard]["out_q"].put(response)
+            else:
+                response = _response
+                break
+            retries -= 1
+        if response is None:
+            raise Empty()
     except Empty:
         raise ServiceUnavailable("Search timed out.")
 
-    hits, duration = response
+    hits, duration, _ = response
     if hits is None or len(hits) < 1:
         raise NotFound("Not found")
 
