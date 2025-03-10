@@ -6,7 +6,7 @@ from time import monotonic
 from search_index import MappingLookupSearch
 
 
-def mapping_lookup_process(in_q, out_q, index_dir, num_shards, shard):
+def mapping_lookup_process(in_q, out_q, out_d, index_dir, num_shards, shard):
     ms = MappingLookupSearch(index_dir, num_shards)
     while True:
         req = in_q.get()
@@ -17,4 +17,4 @@ def mapping_lookup_process(in_q, out_q, index_dir, num_shards, shard):
 
         t0 = monotonic()
         ret = ms.search(req)
-        out_q.put((ret, "%.3fms" % ((monotonic() - t0) * 1000), req["id"]))
+        out_d[req["id"]] = (ret, "%.3fms" % ((monotonic() - t0) * 1000), req["id"])
