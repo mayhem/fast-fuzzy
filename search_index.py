@@ -179,8 +179,7 @@ class MappingLookupSearch:
             if not release_name:
                 if not rec_results:
                     continue
-                print ("result: ", rec_results[0]["release_id"], rec_results[0]["id"], rec_results[0]["confidence"], req["pid"])
-                return [ (r["release_id"], r["id"], r["confidence"], req["pid"]) for r in rec_results[:3] ]
+                return [ (r["release_id"], r["id"], r["confidence"], req["id"]) for r in rec_results[:3] ]
 
             rel_results = artist_data["release_index"].search(release_name, min_confidence=RELEASE_CONFIDENCE)
             exp_results = []
@@ -243,5 +242,4 @@ class MappingLookupSearch:
 #            else:
 #                print("    ** No hits **")
 
-            print ("result: ", hits[0]["release_id"], hits[0]["recording_id"], hits[0]["confidence"], req["pid"])
-            return [ (hits[0]["release_id"], hits[0]["recording_id"], hits[0]["confidence"], req["pid"]) ]
+            return [ (hits[0]["release_id"], hits[0]["recording_id"], hits[0]["confidence"], req["id"]) ]

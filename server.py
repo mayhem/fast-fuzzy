@@ -1,6 +1,6 @@
 import atexit
-from time import monotonic
-from multiprocessing import Process, Queue, set_start_method
+from time import monotonic, sleep
+from multiprocessing import Process, Queue
 from multiprocessing.queues import Empty
 import os
 from uuid import uuid4
@@ -25,9 +25,7 @@ NORMAL_ARTIST_CONFIDENCE = .7
 # If the search hit is less than this, clean metadata and search those too!
 CLEANER_CONFIDENCE = .9
 
-SEARCH_TIMEOUT = 2 # in seconds
-
-set_start_method('spawn')
+SEARCH_TIMEOUT = 10 # in seconds
 
 def create_shard_processes(ms):
 
@@ -146,31 +144,36 @@ def mapping_search(artist, release, recording):
         raise BadRequest("Shard not availble for char '%s'" % shard_ch)
 
     shards[shard]["in_q"].put(req)
-    try:
-        retries = 3
+    timeout = monotonic() + SEARCH_TIMEOUT
+    count = 0
+    t0 = monotonic()
+    while monotonic() < timeout:
+        count += 1
         response = None
-        while retries > 0:
-            _response = shards[shard]["out_q"].get(timeout=SEARCH_TIMEOUT)
-            if _response[2] != req["id"]:
-                shards[shard]["out_q"].put(response)
-            else:
-                response = _response
-                break
-            retries -= 1
-        if response is None:
-            raise Empty()
-    except Empty:
+        try:
+            response = shards[shard]["out_q"].get_nowait()
+        except Empty:
+            sleep(.0001)
+            continue
+
+        if response[2] != req["id"]:
+            print("mismatch! %s vs %s =======================================================" % (response[2], req["id"]))
+            shards[shard]["out_q"].put(response)
+            sleep(.0001)
+                
+        break 
+    
+    t1 = monotonic()
+    print("%d loops were made in %.3fs" % (count, t1-t0))
+    if response is None:
         raise ServiceUnavailable("Search timed out.")
 
     hits, duration, _ = response
     if hits is None or len(hits) < 1:
         raise NotFound("Not found")
 
-    release_id, recording_id, r_conf, pid = hits[0]
+    release_id, recording_id, r_conf, _ = hits[0]
     
-    if pid != os.getpid():
-        raise InternalServerError("PID mismatch!")
-        
     results = []
     data = Mapping.select().where((Mapping.release_id == release_id) & (Mapping.recording_id == recording_id))
     for row in data:
