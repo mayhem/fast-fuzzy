@@ -18,4 +18,4 @@ def mapping_lookup_process(in_q, out_q, index_dir, num_shards, shard):
         t0 = monotonic()
         ret = ms.search(req)
         print("search proc: ", ret)
-        out_q.put((ret, "%.3fms" % ((monotonic() - t0) * 1000)))
+        out_q.put((ret, "%.3fms" % ((monotonic() - t0) * 1000), req["id"]))
