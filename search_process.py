@@ -17,4 +17,7 @@ def mapping_lookup_process(in_q, out_q, index_dir, num_shards, shard):
 
         t0 = monotonic()
         ret = ms.search(req)
-        out_q.put((ret, "%.3fms" % ((monotonic() - t0) * 1000), req["id"]))
+        duration = (monotonic() - t0) * 1000
+        if duration > 2000:
+            print("%.1fms for req %s" % (duration, req["id"]))
+        out_q.put((ret, duration, req["id"]))

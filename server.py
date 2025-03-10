@@ -145,7 +145,7 @@ def mapping_search(artist, release, recording):
 
     shards[shard]["in_q"].put(req)
     timeout = monotonic() + SEARCH_TIMEOUT
-    count = 0
+    count = mismatched = 0
     t0 = monotonic()
     while monotonic() < timeout:
         count += 1
@@ -157,18 +157,20 @@ def mapping_search(artist, release, recording):
             continue
 
         if response[2] != req["id"]:
-            print("mismatch! %s vs %s =======================================================" % (response[2], req["id"]))
+            mismatched += 1
             shards[shard]["out_q"].put(response)
             sleep(.0001)
+            continue
                 
         break 
     
     t1 = monotonic()
-    print("%d loops were made in %.3fs" % (count, t1-t0))
     if response is None:
+        print("%d loops were made in %.3fs to FAIL (queue size %d, req %s)" % (count, t1-t0, shards[shard]["out_q"].qsize(), req["id"]))
         raise ServiceUnavailable("Search timed out.")
 
     hits, duration, _ = response
+#    print("%d loops were made in %.3fs to SUCCEED. req took %s, %d mismatches" % (count, t1-t0, duration, mismatched))
     if hits is None or len(hits) < 1:
         raise NotFound("Not found")
 
