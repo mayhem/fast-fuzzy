@@ -5,6 +5,7 @@ import os
 import sys
 
 from peewee import *
+from tqdm import tqdm
 
 from fuzzy_index import FuzzyIndex
 from database import Mapping, IndexCache, open_db, db
@@ -34,15 +35,23 @@ class BuildIndexes:
 #                        .where(IndexCache.artist_credit_id.is_null())
 #                        .group_by(Mapping.artist_credit_id)
 #                        .order_by(fn.Count(Mapping.artist_credit_id).desc()))
+        cur = db.execute_sql("""select count(*) as cnt
+                                 from mapping
+                            left join index_cache
+                                   on mapping.artist_credit_id = index_cache.artist_credit_id
+                                where index_cache.artist_credit_id is null""")
+        rows = cur.fetchone()[0]
         cur = db.execute_sql("""select mapping.artist_credit_id, count(*) as cnt
                                  from mapping
                             left join index_cache
                                    on mapping.artist_credit_id = index_cache.artist_credit_id
                                 where index_cache.artist_credit_id is null
                              group by mapping.artist_credit_id order by cnt desc""")
-        for row in cur.fetchall():
-            print("artist %d rows: %d" % (row[0], row[1]))
-            self.build_artist_data_index(row[0])
+        with tqdm(total=rows) as t:
+            for row in cur.fetchall():
+                t.write("artist %d rows: %d" % (row[0], row[1]))
+                self.build_artist_data_index(row[0])
+                t.update(1)
 
 
 if __name__ == "__main__":
