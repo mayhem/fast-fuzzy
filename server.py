@@ -12,12 +12,16 @@ from playhouse.shortcuts import model_to_dict
 
 from database import open_db, Mapping
 from search_index import MappingLookupSearch
-from search_process import mapping_lookup_process
 from fuzzy_index import FuzzyIndex
+from shared_mem_cache import SharedMemoryArtistDataCache
 
 
 INDEX_DIR = "index"
-NUM_SHARDS = 16 
+
+# For a speedup, use a RAM disk!
+# sudo mount -o size=10M -t tmpfs none /mnt/tmpfs
+# mount -o remount,size=75G /dev/shm
+TEMP_DIR = "/mnt/tmpfs"
 SHORT_ARTIST_LENGTH = 5
 SHORT_ARTIST_CONFIDENCE = .5
 NORMAL_ARTIST_CONFIDENCE = .7
@@ -27,36 +31,8 @@ CLEANER_CONFIDENCE = .9
 
 SEARCH_TIMEOUT = 10 # in seconds
 
-def create_shard_processes(ms):
-
-    shards = []
-    for i in range(NUM_SHARDS):
-        request_queue = Queue()
-        response_queue = Queue()
-        p = Process(target=mapping_lookup_process, args=(request_queue, response_queue, INDEX_DIR, NUM_SHARDS, i))
-        p.start()
-        shards.append({ "process" : p, "in_q": request_queue, "out_q": response_queue })
-
-    return shards
-
-def stop_shard_processes():
-
-    # Send each worker a message to exit
-    request = { "exit": True }
-    for shard in shards:
-        shard["in_q"].put(request)
-
-    # Join each process and then join the queues
-    for shard in shards:
-        shard["process"].join()
-        shard["in_q"].close()
-        shard["in_q"].join_thread()
-        shard["out_q"].close()
-        shard["out_q"].join_thread()
-
-ms = MappingLookupSearch(INDEX_DIR, NUM_SHARDS)
-ms.split_shards()
-shards = create_shard_processes(ms)
+cache = SharedMemoryArtistDataCache(TEMP_DIR)
+ms = MappingLookupSearch(cache, INDEX_DIR)
 
 artist_index = FuzzyIndex("artist_index")
 artist_index.load(INDEX_DIR)
@@ -69,7 +45,7 @@ db_file = os.path.join(INDEX_DIR, "mapping.db")
 app = Flask(__name__, template_folder = "templates")
 
 def cleanup():
-    stop_shard_processes()
+    cache.clear_cache()
 
 atexit.register(cleanup)
 
@@ -138,44 +114,14 @@ def mapping_search(artist, release, recording):
         "recording_name": recording,
         "id": str(uuid4())
     }
-    try:
-        shard = ms.shards[shard_ch]
-    except KeyError:
-        raise BadRequest("Shard not availble for char '%s'" % shard_ch)
 
-    shards[shard]["in_q"].put(req)
-    timeout = monotonic() + SEARCH_TIMEOUT
-    count = mismatched = 0
-    t0 = monotonic()
-    while monotonic() < timeout:
-        count += 1
-        response = None
-        try:
-            response = shards[shard]["out_q"].get_nowait()
-        except Empty:
-            sleep(.0001)
-            continue
-
-        if response[2] != req["id"]:
-            mismatched += 1
-            shards[shard]["out_q"].put(response)
-            sleep(.0001)
-            continue
-                
-        break 
-    
-    t1 = monotonic()
-    if response is None:
-        print("%d loops were made in %.3fs to FAIL (queue size %d, req %s)" % (count, t1-t0, shards[shard]["out_q"].qsize(), req["id"]))
-        raise ServiceUnavailable("Search timed out.")
-
-    hits, duration, _ = response
-#    print("%d loops were made in %.3fs to SUCCEED. req took %s, %d mismatches" % (count, t1-t0, duration, mismatched))
-    if hits is None or len(hits) < 1:
+    t0 = monotonic() 
+    resp = ms.search(req)
+    duration = monotonic() - t0
+    if resp is None:
         raise NotFound("Not found")
 
-    release_id, recording_id, r_conf, _ = hits[0]
-    
+    release_id, recording_id, r_conf = resp
     results = []
     data = Mapping.select().where((Mapping.release_id == release_id) & (Mapping.recording_id == recording_id))
     for row in data:
@@ -183,7 +129,7 @@ def mapping_search(artist, release, recording):
         del d["score"]
         del d["shard_ch"]
         d["r_conf"] = r_conf
-        d["time"] = duration
+        d["time"] = "%.1fms" % (duration * 1000)
         # TODO: Investigate this exception
         try:
             d["a_conf"] = conf_index[d["artist_credit_id"]]

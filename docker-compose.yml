@@ -8,11 +8,13 @@ services:
 
   web:
     build: .
+    shm_size: '5gb'
     image: fast-fuzzy
     expose:
       - "3031"
     volumes:
       - ./index:/code/fuzzy/index
+      - /mnt/tmpfs:/mnt/tmpfs
     restart: unless-stopped
     environment:
       - VIRTUAL_HOST=dev.listenbrainz.org

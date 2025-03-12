@@ -18,9 +18,7 @@ NUM_FUZZY_SEARCH_RESULTS = 500
 class FuzzyIndex:
     '''
        Create a fuzzy index using a Term Frequency, Inverse Document Frequency (tf-idf)
-       algorithm. Currently the libraries that implement this cannot be serialized to disk,
-       so this is an in memory operation. Fortunately for our amounts of data, it should
-       be quick to rebuild this index.
+       algorithm.
     '''
 
     def __init__(self, name=None):
@@ -63,6 +61,29 @@ class FuzzyIndex:
         self.index.saveIndex(i_file, save_data=True)
         with open(d_file, "wb") as f:
             pickle.dump(self.index_data, f)
+            
+    def save_to_mem(self, temp_dir):
+        # TODO: Use scikit to pickle the vectorizer for better memory performance
+        # TODO: Do not save the additional data, its only used for debugging
+        vec = pickle.dumps(self.vectorizer)
+        additional_data = pickle.dumps(self.index_data)
+
+        i_file = os.path.join(temp_dir, "%d.pickle" % os.getpid())
+        self.index.saveIndex(i_file, save_data=True)
+        with open(i_file, "rb") as f:
+            index = f.read()
+        os.unlink(i_file)
+        
+        i_dat_file = os.path.join(temp_dir, "%d.pickle.dat" % os.getpid())
+        with open(i_dat_file, "rb") as f:
+            index_data = f.read()
+        os.unlink(i_dat_file)
+
+        # Ready for pickling
+        return { "vec": vec,
+                 "index": index,
+                 "index_data": index_data,
+                 "additional_data": additional_data }
 
     def load(self, index_dir):
         v_file = os.path.join(index_dir, "%s_nmslib_vectorizer.pickle" % self.name)
@@ -79,6 +100,20 @@ class FuzzyIndex:
         except OSError:
             return False
 
+    def load_from_mem(self, data, temp_dir):
+
+        self.vectorizer = pickle.loads(data["vec"])
+        self.index_data = pickle.loads(data["additional_data"])
+
+        i_file = os.path.join(temp_dir, "%d.pickle" % os.getpid())
+        with open(i_file, "wb") as f:
+            f.write(data["index"])
+        i_dat_file = os.path.join(temp_dir, "%d.pickle.dat" % os.getpid())
+        with open(i_dat_file, "wb") as f:
+            f.write(data["index_data"])
+        self.index.loadIndex(i_file, load_data=True)
+        os.unlink(i_file)
+        os.unlink(i_dat_file)
 
     def search(self, query_string, min_confidence, debug=False):
         """ Carry out search, returns list of dicts: "text", "id", "confidence" """

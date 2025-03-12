@@ -1,4 +1,4 @@
-FROM python:3.12.2
+FROM python:3.13.2
 
 RUN apt search postgresql-server
 RUN apt-get update \
@@ -27,4 +27,4 @@ COPY . /code/fuzzy
 
 CMD uwsgi --gid=www-data --uid=www-data --http-socket :3031 \
           --vhost --module=server --callable=app --chdir=/code/fuzzy \
-          --processes=50
+          --processes=100 --disable-logging --master

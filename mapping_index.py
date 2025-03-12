@@ -66,6 +66,7 @@ class MappingLookupIndex:
                                  ON artist_credit_id = acn.artist_credit
                                JOIN artist a
                                  ON acn.artist = a.id
+                              WHERE artist_credit_id < 10000
                            GROUP BY artist_credit_id
                                   , artist_mbids
                                   , artist_credit_name
@@ -75,7 +76,6 @@ class MappingLookupIndex:
                                   , rec.id
                                   , score
                            ORDER BY artist_credit_id""")
-#                              WHERE artist_credit_id < 10000
 #                              WHERE artist_credit_id > 1230420 and artist_credit_id < 1230800
 
             print("load data")
@@ -185,7 +185,7 @@ class MappingLookupIndex:
             return
 
         # Get rid of the CSV files now that we've imported it
-        #os.unlink(import_file)
+        os.unlink(import_file)
 
         print("Build/save artist indexes")
         artist_index = FuzzyIndex(name="artist_index")

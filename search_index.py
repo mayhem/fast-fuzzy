@@ -2,16 +2,16 @@
 
 from collections import defaultdict
 from math import ceil
-from pickle import load
+from pickle import load, dumps, loads
 from random import randint
 from time import monotonic, sleep
 from struct import unpack
+from multiprocessing import shared_memory
 import struct
 import os
 import sys
 
 from fuzzy_index import FuzzyIndex
-from shard_histogram import shard_histogram
 from utils import split_dict_evenly
 from database import Mapping
 from database import open_db
@@ -22,43 +22,22 @@ RECORDING_CONFIDENCE = .5
 
 class MappingLookupSearch:
 
-    def __init__(self, index_dir, num_shards):
+    def __init__(self, cache, index_dir):
         self.index_dir = index_dir
-        self.num_shards = num_shards
-        self.shard = None
-        self.shards = None
+        self.cache = cache
 
         self.artist_index = None
         self.artist_data = {}
 
         self.db_file = os.path.join(index_dir, "mapping.db")
         
-    @staticmethod
-    def chunks(l, n):
-        d, r = divmod(len(l), n)
-        for i in range(n):
-            si = (d+1)*(i if i < r else r) + d*(0 if i < r else i - r)
-            yield l[si:si+(d+1 if i < r else d)]
-
-    def split_shards(self):
-        """ determine how to break up shards """
-
-        # Split the dict based on an even distribution of the value's sums
-        split_hist = split_dict_evenly(shard_histogram, self.num_shards)
-
-        self.shards = {}
-        for shard, pairs in enumerate(split_hist):
-            for ch in pairs:
-                self.shards[ch] = shard
-
-    def load_artist(self, artist_credit_id):
+    def load_artist(self, artist_credit_id, dont_cache=False):
         """ Load one artist's release and recordings data from disk. Correct relrec_offsets chunk must be loaded. """
 
         # Have we loaded this already? If so, bail!
-        try:
-            return self.artist_data[artist_credit_id]
-        except KeyError:
-            pass
+        data = self.cache.load(artist_credit_id)
+        if data is not None:
+            return data
 
         recording_data = []
         recording_releases = defaultdict(list)
@@ -109,13 +88,19 @@ class MappingLookupSearch:
         
         recording_index = FuzzyIndex()
         if recording_data:
-            recording_index.build(recording_data, "text")
+            try:
+                recording_index.build(recording_data, "text")
+            except ValueError:
+                return None
         else:
             return None
 
         release_index = FuzzyIndex()
         if release_data:
-            release_index.build(release_data, "text")
+            try:
+                release_index.build(release_data, "text")
+            except ValueError:
+                return None
         else:
             return None
 
@@ -126,7 +111,9 @@ class MappingLookupSearch:
             "recording_releases": recording_releases,
             "release_data": release_data
         }
-        self.artist_data[artist_credit_id] = entry
+        
+        if not dont_cache:
+            self.cache.save(artist_credit_id, entry)
         
         return entry
 
@@ -149,7 +136,7 @@ class MappingLookupSearch:
         for artist_id in artist_ids:
             artist_data = self.load_artist(artist_id)
             if artist_data is None:
-                print(f"artist {artist_id} not found on this shard. {self.shard}")
+                print(f"artist {artist_id} index could not be built. (Empty data?)")
                 continue
 
             rec_results = artist_data["recording_index"].search(recording_name, min_confidence=RECORDING_CONFIDENCE)
@@ -179,7 +166,7 @@ class MappingLookupSearch:
             if not release_name:
                 if not rec_results:
                     continue
-                return [ (r["release_id"], r["id"], r["confidence"], req["id"]) for r in rec_results[:3] ]
+                return (rec_results[0]["release_id"], rec_results[0]["id"], rec_results[0]["confidence"])
 
             rel_results = artist_data["release_index"].search(release_name, min_confidence=RELEASE_CONFIDENCE)
             exp_results = []
@@ -242,4 +229,6 @@ class MappingLookupSearch:
 #            else:
 #                print("    ** No hits **")
 
-            return [ (hits[0]["release_id"], hits[0]["recording_id"], hits[0]["confidence"], req["id"]) ]
+            return (hits[0]["release_id"], hits[0]["recording_id"], hits[0]["confidence"])
+
+        return None
