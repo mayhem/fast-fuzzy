@@ -12,6 +12,7 @@ from database import Mapping, IndexCache, open_db, db
 from search_index import MappingLookupSearch
 from shared_mem_cache import SharedMemoryArtistDataCache
 
+BATCH_SIZE = 500
 
 class BuildIndexes:
     
@@ -20,21 +21,25 @@ class BuildIndexes:
         self.temp_dir = temp_dir
         self.cache = SharedMemoryArtistDataCache(temp_dir)
         self.ms = MappingLookupSearch(self.cache, index_dir)
+        self.batch = []
 
     
     def build_artist_data_index(self, artist_credit_id):
         data = self.ms.load_artist(artist_credit_id, dont_cache=True)
-        pickled = self.cache.pickle_data(data)
-
-        index = IndexCache().create(artist_credit_id=artist_credit_id, artist_data=pickled)
-        index.replace()
+        try:
+            pickled = self.cache.pickle_data(data)
+        except TypeError:
+            return
+        
+        self.batch.append((artist_credit_id, pickled))
+        if len(self.batch) >= BATCH_SIZE:
+            with db.atomic() as transaction:
+                for ac_id, pickled in self.batch:
+                    index = IndexCache().create(artist_credit_id=ac_id, artist_data=pickled)
+                    index.replace()
+            self.batch = []
         
     def build(self):
-#        query = (Mapping.select(Mapping.artist_credit_id, fn.Count(Mapping.artist_credit_id).alias("cnt"))
-#                        .join(IndexCache, IndexCache.artist_credit_id == Mapping.artist_credit_id, JOIN.LEFT_OUTER)
-#                        .where(IndexCache.artist_credit_id.is_null())
-#                        .group_by(Mapping.artist_credit_id)
-#                        .order_by(fn.Count(Mapping.artist_credit_id).desc()))
         cur = db.execute_sql("""select count(*) as cnt
                                  from mapping
                             left join index_cache
