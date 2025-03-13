@@ -11,10 +11,11 @@ import struct
 import os
 import sys
 
+from peewee import DoesNotExist
+
 from fuzzy_index import FuzzyIndex
 from utils import split_dict_evenly
-from database import Mapping
-from database import open_db
+from database import Mapping, IndexCache, open_db
 
 RELEASE_CONFIDENCE = .5
 RECORDING_CONFIDENCE = .5
@@ -32,13 +33,24 @@ class MappingLookupSearch:
         self.db_file = os.path.join(index_dir, "mapping.db")
         
     def load_artist(self, artist_credit_id, dont_cache=False):
-        """ Load one artist's release and recordings data from disk. Correct relrec_offsets chunk must be loaded. """
+        """ Load one artist's release and recordings data from rows/cache/prepared. """
 
-        # Have we loaded this already? If so, bail!
+        # Does this artist data live in the shared cache?
         data = self.cache.load(artist_credit_id)
         if data is not None:
             return data
 
+        # Do we have a build index in the DB?
+        try: 
+            item = IndexCache.get(IndexCache.artist_credit_id == artist_credit_id)
+            data = self.cache.unpickle_data(item.artist_data)
+            if not dont_cache:
+                self.cache.save(artist_credit_id, data)
+            return data
+        except DoesNotExist:
+            pass
+
+        # No dice, gotta build this ourselves
         recording_data = []
         recording_releases = defaultdict(list)
         release_data = []
@@ -46,6 +58,9 @@ class MappingLookupSearch:
         data = Mapping.select().where(Mapping.artist_credit_id == artist_credit_id)
         for i, row in enumerate(data):
             encoded = FuzzyIndex.encode_string(row.recording_name)
+            # Recordings that have no word characters are skipped currently.
+            if not encoded:
+                continue
             recording_ref[encoded].append({ "id": row.recording_id,
                                             "release_id": row.release_id,
                                             "score": row.score })
@@ -91,18 +106,27 @@ class MappingLookupSearch:
             try:
                 recording_index.build(recording_data, "text")
             except ValueError:
-                return None
+                recording_index = None
         else:
-            return None
+            recording_index = None
 
         release_index = FuzzyIndex()
         if release_data:
             try:
                 release_index.build(release_data, "text")
             except ValueError:
-                return None
+                release_index = None
         else:
-            return None
+            release_index = None
+            
+        # If either the release or the recording index is null, clear out the other data that will
+        # never be used. We return this empty entry to prevent future/build/fail cycles
+        if release_index is None or recording_data is None:
+            recording_data = None
+            release_data = None
+            recording_releases = None
+            release_index = None
+            recording_index = None
 
         entry = {
             "recording_index": recording_index,
@@ -135,8 +159,8 @@ class MappingLookupSearch:
         results = []
         for artist_id in artist_ids:
             artist_data = self.load_artist(artist_id)
-            if artist_data is None:
-                print(f"artist {artist_id} index could not be built. (Empty data?)")
+            # If the index is None, we've got no data to search, keep going
+            if artist_data is None or artist_data["recording_index"] is None:
                 continue
 
             rec_results = artist_data["recording_index"].search(recording_name, min_confidence=RECORDING_CONFIDENCE)

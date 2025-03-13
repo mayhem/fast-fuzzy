@@ -13,13 +13,13 @@ from playhouse.shortcuts import model_to_dict
 from database import open_db, Mapping
 from search_index import MappingLookupSearch
 from fuzzy_index import FuzzyIndex
-from shared_mem_cache import SharedMemoryArtistDataCache
+from shared_mem_cache import SharedMemoryArtistDataCache, start_manager_thread
 
 
 INDEX_DIR = "index"
 
 # For a speedup, use a RAM disk!
-# sudo mount -o size=10M -t tmpfs none /mnt/tmpfs
+# sudo mount -o size=100M -t tmpfs none /mnt/tmpfs
 # mount -o remount,size=75G /dev/shm
 TEMP_DIR = "/mnt/tmpfs"
 SHORT_ARTIST_LENGTH = 5
@@ -31,8 +31,11 @@ CLEANER_CONFIDENCE = .9
 
 SEARCH_TIMEOUT = 10 # in seconds
 
-cache = SharedMemoryArtistDataCache(TEMP_DIR)
+cache = SharedMemoryArtistDataCache(TEMP_DIR, max_cache_size=1024 * 1024 * 1024 * 2)
 ms = MappingLookupSearch(cache, INDEX_DIR)
+
+p = Process(target=start_manager_thread, args=[cache])
+p.start()
 
 artist_index = FuzzyIndex("artist_index")
 artist_index.load(INDEX_DIR)
@@ -45,6 +48,8 @@ db_file = os.path.join(INDEX_DIR, "mapping.db")
 app = Flask(__name__, template_folder = "templates")
 
 def cleanup():
+    print("atexit cleanup starting")
+    cache.stop_process()
     cache.clear_cache()
 
 atexit.register(cleanup)
@@ -53,7 +58,6 @@ def mapping_search(artist, release, recording):
 
     mc = MetadataCleaner()
     encoded_artist = artist_index.encode_string(artist)
-    shard_ch = None
     
     open_db(db_file)
 
@@ -80,30 +84,20 @@ def mapping_search(artist, release, recording):
             raise NotFound("Artist '%s' was not found." % artist)
 
         artists = sorted(artists, key=lambda a: a["confidence"], reverse=True)
-        shard_ch = artists[0]["shard_ch"]
-
         # Collect the artist ids
-        ids = []
-        for a in artists:
-            if a["shard_ch"] == shard_ch:
-                ids.append(a["id"])
+        ids = [ a["id"] for a in artists ]
 
     else:
-        # If the name contains no word characters (stoopid), search the stupid artists and send them to the stooopid shard
+        # If the name contains no word characters (stoopid), search the stupid artists
         if stupid_artist_index:
             encoded = FuzzyIndex.encode_string_for_stupid_artists(artist)
             artists = stupid_artist_index.search(encoded, min_confidence=NORMAL_ARTIST_CONFIDENCE)
-            shard_ch = "$"
             ids = [ a["id"] for a in artists ]
         else:
             return jsonify({})
 
     if not ids:
         raise NotFound("Artist '%s' was not found." % artist)
-
-#    print("on shard '%s' search on: " % shard_ch)
-#    for a in artists:
-#        print("  %-30s %10d %.3f" % (a["text"][:30], a["id"], a["confidence"]))
 
     conf_index = { a["id"]:a["confidence"] for a in artists }
     # Make the search request
@@ -127,7 +121,6 @@ def mapping_search(artist, release, recording):
     for row in data:
         d = model_to_dict(row)
         del d["score"]
-        del d["shard_ch"]
         d["r_conf"] = r_conf
         d["time"] = "%.1fms" % (duration * 1000)
         # TODO: Investigate this exception
