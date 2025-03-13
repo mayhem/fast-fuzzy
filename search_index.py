@@ -7,6 +7,7 @@ from random import randint
 from time import monotonic, sleep
 from struct import unpack
 from multiprocessing import shared_memory
+from peewee import *
 import struct
 import os
 import sys
@@ -20,6 +21,7 @@ from database import Mapping, IndexCache, open_db
 RELEASE_CONFIDENCE = .5
 RECORDING_CONFIDENCE = .5
 
+# TODO: read up on sqlite locking
 
 class MappingLookupSearch:
 
@@ -41,14 +43,18 @@ class MappingLookupSearch:
             return data
 
         # Do we have a build index in the DB?
-        try: 
-            item = IndexCache.get(IndexCache.artist_credit_id == artist_credit_id)
-            data = self.cache.unpickle_data(item.artist_data)
-            if not dont_cache:
-                self.cache.save(artist_credit_id, data)
-            return data
-        except DoesNotExist:
-            pass
+        while True:
+            try: 
+                item = IndexCache.get(IndexCache.artist_credit_id == artist_credit_id)
+                data = self.cache.unpickle_data(item.artist_data)
+                if not dont_cache:
+                    self.cache.save(artist_credit_id, data)
+                return data
+            except OperationalError:
+                sleep(.001)
+                continue
+            except DoesNotExist:
+                break
 
         # No dice, gotta build this ourselves
         recording_data = []
@@ -79,7 +85,6 @@ class MappingLookupSearch:
                                "text": text, 
                                "score": release_data[r] })
         release_data = flattened
-        print(release_data)
 
         recording_data = []
         for i, text in enumerate(recording_ref):
