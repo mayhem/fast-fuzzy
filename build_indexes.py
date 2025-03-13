@@ -55,7 +55,6 @@ class BuildIndexes:
                 batch = []
 
         if batch:
-            print("write last butts!")
             with db.atomic() as transaction:
                 for ac_id, pickled in batch:
                     while True:
