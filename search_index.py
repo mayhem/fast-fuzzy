@@ -33,54 +33,40 @@ class MappingLookupSearch:
         self.artist_data = {}
 
         self.db_file = os.path.join(index_dir, "mapping.db")
-        
-    def load_artist(self, artist_credit_id, dont_cache=False):
-        """ Load one artist's release and recordings data from rows/cache/prepared. """
 
-        # Does this artist data live in the shared cache?
-        data = self.cache.load(artist_credit_id)
-        if data is not None:
-            return data
+    def create_artist(self, artist_credit_id):
 
-        # Do we have a build index in the DB?
-        while True:
-            try: 
-                item = IndexCache.get(IndexCache.artist_credit_id == artist_credit_id)
-                data = self.cache.unpickle_data(item.artist_data)
-                if not dont_cache:
-                    self.cache.save(artist_credit_id, data)
-                return data
-            except OperationalError:
-                sleep(.001)
-                continue
-            except DoesNotExist:
-                break
-
-        # No dice, gotta build this ourselves
         recording_data = []
         recording_releases = defaultdict(list)
         release_data = {}
         recording_ref = defaultdict(list)
-        data = Mapping.select().where(Mapping.artist_credit_id == artist_credit_id)
-        for i, row in enumerate(data):
-            encoded = FuzzyIndex.encode_string(row.recording_name)
-            # Recordings that have no word characters are skipped currently.
-            if not encoded:
-                continue
-            recording_ref[encoded].append({ "id": row.recording_id,
-                                            "release_id": row.release_id,
-                                            "score": row.score })
-            recording_releases[row.recording_id].append(row.release_id)
 
-            encoded = FuzzyIndex.encode_string(row.release_name)
-            if encoded:
-                # Another data struct is needed from which to xref search results 
-                # The int parssed to the index is the index of this list, where a list of release_ids are.
-                release_data["%d-%s" % (row.release_id, encoded)] = row.score
+        while True:
+            try:
+                data = Mapping.select().where(Mapping.artist_credit_id == artist_credit_id)
+                for i, row in enumerate(data):
+                    encoded = FuzzyIndex.encode_string(row.recording_name)
+                    # Recordings that have no word characters are skipped currently.
+                    if not encoded:
+                        continue
+                    recording_ref[encoded].append({ "id": row.recording_id,
+                                                    "release_id": row.release_id,
+                                                    "score": row.score })
+                    recording_releases[row.recording_id].append(row.release_id)
+
+                    encoded = FuzzyIndex.encode_string(row.release_name)
+                    if encoded:
+                        # Another data struct is needed from which to xref search results 
+                        # The int parssed to the index is the index of this list, where a list of release_ids are.
+                        release_data["%d-%s" % (row.release_id, encoded)] = row.score
+                break
+            except OperationalError:
+                sleep(.01)
+
                                               
         flattened = []
         for r in release_data:
-            id, text = r.split("-")
+            id, text = r.split("-", 1)
             flattened.append({ "id": id,
                                "text": text, 
                                "score": release_data[r] })
@@ -101,11 +87,6 @@ class MappingLookupSearch:
         for i, text in enumerate(release_ref):
             release_data.append({ "text": text, "id": i, "release_id_scores": release_ref[text] })
             
-#        print("create")
-#        for e in sorted(recording_data, key=lambda x: x["text"]):
-#            print("%.3f %-8d %-8d %-8d %s" % (0.0, e["id"], e["score"], e["release_id"], e["text"]))
-#        print()
-        
         recording_index = FuzzyIndex()
         if recording_data:
             try:
@@ -140,11 +121,36 @@ class MappingLookupSearch:
             "recording_releases": recording_releases,
             "release_data": release_data
         }
-        
-        if not dont_cache:
-            self.cache.save(artist_credit_id, entry)
-        
         return entry
+
+        
+    def load_artist(self, artist_credit_id, write_cache=True):
+        """ Load one artist's release and recordings data from rows/cache/prepared. """
+
+        # Does this artist data live in the shared cache?
+        data = self.cache.load(artist_credit_id)
+        if data is not None:
+            return data
+
+        # Do we have a build index in the DB?
+        while True:
+            try: 
+                item = IndexCache.get(IndexCache.artist_credit_id == artist_credit_id)
+                data = self.cache.unpickle_data(item.artist_data)
+                if write_cache:
+                    self.cache.save(artist_credit_id, data)
+                return data
+            except OperationalError:
+                sleep(.001)
+                continue
+            except DoesNotExist:
+                break
+
+        # No dice, gotta build this ourselves
+        index = self.create_artist(artist_credit_id)
+        if write_cache:
+            self.cache.save(artist_credit_id, index)
+        return index
 
     def search(self, req):
 

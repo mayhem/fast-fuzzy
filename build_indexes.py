@@ -4,6 +4,8 @@ import concurrent.futures
 from time import monotonic
 import os
 import sys
+from time import sleep
+from traceback import print_exception
 
 from peewee import *
 from tqdm import tqdm
@@ -19,7 +21,6 @@ bi = None
 
 def build_data(lst):
     bi.build_artist_data_index(lst)
-    return True
         
 class BuildIndexes:
     
@@ -33,7 +34,7 @@ class BuildIndexes:
     def build_artist_data_index(self, artist_list):
         batch = []
         for artist_credit_id in artist_list:
-            data = self.ms.load_artist(artist_credit_id, dont_cache=True)
+            data = self.ms.load_artist(artist_credit_id, write_cache=False)
             try:
                 pickled = self.cache.pickle_data(data)
             except TypeError:
@@ -54,6 +55,7 @@ class BuildIndexes:
                 batch = []
 
         if batch:
+            print("write last butts!")
             with db.atomic() as transaction:
                 for ac_id, pickled in batch:
                     while True:
@@ -63,26 +65,24 @@ class BuildIndexes:
                             break
                         except OperationalError:
                             sleep(.1)
-            self.batch = []
+            batch = []
             
     def build_data(self, lst):
         for l in lst:
             build_artist_data_index(l)
             
     def build(self):
-        cur = db.execute_sql("""select count(*) as cnt
-                                 from mapping
-                            left join index_cache
-                                   on mapping.artist_credit_id = index_cache.artist_credit_id
-                                where index_cache.artist_credit_id is null""")
-        rows = cur.fetchone()[0]
-        cur = db.execute_sql("""select mapping.artist_credit_id, count(*) as cnt
-                                 from mapping
-                            left join index_cache
-                                   on mapping.artist_credit_id = index_cache.artist_credit_id
-                                where index_cache.artist_credit_id is null
-                             group by mapping.artist_credit_id order by cnt desc""")
-        
+        cur = db.execute_sql("""WITH artist_ids AS (
+                                        SELECT DISTINCT mapping.artist_credit_id
+                                          FROM mapping
+                                     LEFT JOIN index_cache
+                                            ON mapping.artist_credit_id = index_cache.artist_credit_id
+                                         WHERE index_cache.artist_credit_id is null
+                                )
+                                        SELECT artist_credit_id, count(*) as cnt
+                                          FROM artist_ids
+                                      GROUP BY artist_credit_id order by cnt desc""")
+
         proc_data = []
         cur_chunk = []
         for row in enumerate(cur.fetchall()):
@@ -90,12 +90,17 @@ class BuildIndexes:
             if len(cur_chunk) >= BATCH_SIZE:
                 proc_data.append(cur_chunk)
                 cur_chunk = []
-                
-        print("got %s chunks!" % len(proc_data))
+        if cur_chunk:
+            proc_data.append(cur_chunk)
+
         with tqdm(total=len(proc_data)) as t:
             with concurrent.futures.ProcessPoolExecutor(max_workers=self.num_procs) as exe:
                 future_to_batch = {exe.submit(build_data, data): i for i, data in enumerate(proc_data) }
                 for future in concurrent.futures.as_completed(future_to_batch):
+                    exc = future.exception()
+                    if exc:
+                        print_exception(exc)
+                        sys.exit(-1)
                     t.update(1)
 
 if __name__ == "__main__":
@@ -107,4 +112,5 @@ if __name__ == "__main__":
     num_procs = sys.argv[2]
     open_db(os.path.join(index_dir, "mapping.db"))
     bi = BuildIndexes(index_dir, "/mnt/tmpfs", int(num_procs))
+#    bi.ms.load_artist(65)
     bi.build()
