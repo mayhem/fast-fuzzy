@@ -66,7 +66,7 @@ class MappingLookupIndex:
                                  ON artist_credit_id = acn.artist_credit
                                JOIN artist a
                                  ON acn.artist = a.id
-                              WHERE artist_credit_id < 10000
+                              WHERE artist_credit_id > 1230420 and artist_credit_id < 1230800
                            GROUP BY artist_credit_id
                                   , artist_mbids
                                   , artist_credit_name
@@ -76,7 +76,7 @@ class MappingLookupIndex:
                                   , rec.id
                                   , score
                            ORDER BY artist_credit_id""")
-#                              WHERE artist_credit_id > 1230420 and artist_credit_id < 1230800
+#                              WHERE artist_credit_id < 10000
 
             print("load data")
             mapping_data = []
@@ -94,7 +94,8 @@ class MappingLookupIndex:
                               "recording_id", 
                               "recording_mbid", 
                               "recording_name", 
-                              "score"]
+                              "score", 
+                              "shard_ch"]
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames, dialect="unix")
                 for i, row in enumerate(curs):
                     if i == 0:
@@ -109,32 +110,42 @@ class MappingLookupIndex:
                         # Save artist data for artist index
                         encoded = FuzzyIndex.encode_string(last_row["artist_credit_name"])
                         if encoded:
+                            shard_ch = encoded[0]
                             artist_data.append({ "text": encoded,
-                                                 "id": last_row["artist_credit_id"] })
+                                                 "id": last_row["artist_credit_id"],
+                                                 "shard_ch": shard_ch })
                             if not ad.only_alphabet_chars(last_row["artist_credit_name"], "LATIN"):
                                 encoded = FuzzyIndex.encode_string(last_row["artist_credit_sortname"][0])
                                 if encoded:
+#                                    print("%-30s %s %-30s %s" % (last_row["artist_credit_name"], shard_ch,
+#                                                                 last_row["artist_credit_sortname"][0], encoded[0]))
                                     # 幾何学模様 a                  Kikagaku Moyo c
                                     artist_data.append({ "text": encoded,
-                                                         "id": last_row["artist_credit_id"] })
+                                                         "id": last_row["artist_credit_id"],
+                                                         "shard_ch": shard_ch })
 
                         else:
                             encoded = FuzzyIndex.encode_string_for_stupid_artists(last_row["artist_credit_name"])
                             if not encoded:
                                 last_row = row
                                 continue
+                            shard_ch = "$"
                             stupid_artist_data.append({ "text": encoded, 
-                                                        "id": last_row["artist_credit_id"] })
+                                                        "id": last_row["artist_credit_id"],
+                                                        "shard_ch": shard_ch})
 
                         recording_data = []
                         release_data = []
-
-                        # Review this again    
-                        mapping_data.append(artist_mapping_data)
+                
+                        # Go through the collected mapping data for this artist and set shard_ch, then copy to mapping data
+                        for am in artist_mapping_data:
+                            am["shard_ch"] = shard_ch
+                            mapping_data.append(am)
                         artist_mapping_data = []
 
                     arow = dict(row)
                     arow["artist_mbids"] = ",".join(row["artist_mbids"])
+                    arow["shard_ch"] = None
                     arow["artist_credit_sortname"] = row["artist_credit_sortname"][0]
                     artist_mapping_data.append(arow)
 

@@ -19,7 +19,7 @@ class BuildIndexes:
     def __init__(self, index_dir, temp_dir):
         self.index_dir = index_dir
         self.temp_dir = temp_dir
-        self.cache = SharedMemoryArtistDataCache(temp_dir)
+        self.cache = SharedMemoryArtistDataCache(temp_dir, 0)
         self.ms = MappingLookupSearch(self.cache, index_dir)
         self.batch = []
 

@@ -41,6 +41,9 @@ class SharedMemoryArtistDataCache(ArtistDataCache):
         return pickle.dumps(prepared)
         
     def save(self, artist_id, artist_data):
+        if self.max_cache_size == 0:
+            return
+
         pickled = self.pickle_data(artist_data)
         p_len = len(pickled)
         try:
