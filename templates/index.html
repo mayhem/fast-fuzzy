@@ -27,6 +27,14 @@
 	</form>
 
       <table>
+	 <thead>
+           <td>artist</td>
+	   <td>a conf</td>
+	   <td>release</td>
+	   <td>recording</td>
+	   <td>r conf</td>
+	   <td>time</td>
+	 </thead>
 	 {% for result in results %}
 	 <tr>
 	   <td>{{ result.artist_credit_name }}</td>
@@ -34,6 +42,7 @@
 	   <td>{{ result.release_name }}</td>
 	   <td>{{ result.recording_name }}</td>
 	   <td>{{ result.r_conf|round(2) }}</td>
+	   <td>{{ result.time }}</td>
 	 </tr>
 	 {% endfor %}
       </table>

@@ -53,7 +53,7 @@ class MappingLookupSearch:
         # No dice, gotta build this ourselves
         recording_data = []
         recording_releases = defaultdict(list)
-        release_data = []
+        release_data = {}
         recording_ref = defaultdict(list)
         data = Mapping.select().where(Mapping.artist_credit_id == artist_credit_id)
         for i, row in enumerate(data):
@@ -69,17 +69,17 @@ class MappingLookupSearch:
             encoded = FuzzyIndex.encode_string(row.release_name)
             if encoded:
                 # Another data struct is needed from which to xref search results 
-                # The int passed to the index is the index of this list, where a list of release_ids are.
-                release_data.append({ "id": row.release_id,
-                                      "text": encoded,
-                                      "score": row.score })
-                
-        #TODO: Dedup this
-#eb-1  |     release results for 'war'
-#eb-1  |         rel id   name                     confidence
-#eb-1  |         2013864  war                            1.00
-#eb-1  |         2013864  war                            1.00
-#eb-1  |         2013864  war                            1.00
+                # The int parssed to the index is the index of this list, where a list of release_ids are.
+                release_data["%d-%s" % (row.release_id, encoded)] = row.score
+                                              
+        flattened = []
+        for r in release_data:
+            id, text = r.split("-")
+            flattened.append({ "id": id,
+                               "text": text, 
+                               "score": release_data[r] })
+        release_data = flattened
+        print(release_data)
 
         recording_data = []
         for i, text in enumerate(recording_ref):

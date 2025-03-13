@@ -48,11 +48,15 @@ db_file = os.path.join(INDEX_DIR, "mapping.db")
 app = Flask(__name__, template_folder = "templates")
 
 def cleanup():
-    print("atexit cleanup starting")
+    assert False
     cache.stop_process()
     cache.clear_cache()
 
-atexit.register(cleanup)
+try:
+    import uwsgi
+    uwsgi.atexit = cleanup
+except ImportError:
+    atexit.register(cleanup)
 
 def mapping_search(artist, release, recording):
 

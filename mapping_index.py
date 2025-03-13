@@ -94,8 +94,7 @@ class MappingLookupIndex:
                               "recording_id", 
                               "recording_mbid", 
                               "recording_name", 
-                              "score", 
-                              "shard_ch"]
+                              "score"]
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames, dialect="unix")
                 for i, row in enumerate(curs):
                     if i == 0:
@@ -110,42 +109,32 @@ class MappingLookupIndex:
                         # Save artist data for artist index
                         encoded = FuzzyIndex.encode_string(last_row["artist_credit_name"])
                         if encoded:
-                            shard_ch = encoded[0]
                             artist_data.append({ "text": encoded,
-                                                 "id": last_row["artist_credit_id"],
-                                                 "shard_ch": shard_ch })
+                                                 "id": last_row["artist_credit_id"] })
                             if not ad.only_alphabet_chars(last_row["artist_credit_name"], "LATIN"):
                                 encoded = FuzzyIndex.encode_string(last_row["artist_credit_sortname"][0])
                                 if encoded:
-#                                    print("%-30s %s %-30s %s" % (last_row["artist_credit_name"], shard_ch,
-#                                                                 last_row["artist_credit_sortname"][0], encoded[0]))
                                     # 幾何学模様 a                  Kikagaku Moyo c
                                     artist_data.append({ "text": encoded,
-                                                         "id": last_row["artist_credit_id"],
-                                                         "shard_ch": shard_ch })
+                                                         "id": last_row["artist_credit_id"] })
 
                         else:
                             encoded = FuzzyIndex.encode_string_for_stupid_artists(last_row["artist_credit_name"])
                             if not encoded:
                                 last_row = row
                                 continue
-                            shard_ch = "$"
                             stupid_artist_data.append({ "text": encoded, 
-                                                        "id": last_row["artist_credit_id"],
-                                                        "shard_ch": shard_ch})
+                                                        "id": last_row["artist_credit_id"] })
 
                         recording_data = []
                         release_data = []
-                
-                        # Go through the collected mapping data for this artist and set shard_ch, then copy to mapping data
-                        for am in artist_mapping_data:
-                            am["shard_ch"] = shard_ch
-                            mapping_data.append(am)
+
+                        # Review this again    
+                        mapping_data.append(artist_mapping_data)
                         artist_mapping_data = []
 
                     arow = dict(row)
                     arow["artist_mbids"] = ",".join(row["artist_mbids"])
-                    arow["shard_ch"] = None
                     arow["artist_credit_sortname"] = row["artist_credit_sortname"][0]
                     artist_mapping_data.append(arow)
 
